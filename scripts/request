@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+
+curl --no-keepalive http://ccfit.nsu.ru > ../build/without.txt

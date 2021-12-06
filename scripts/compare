@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+
+diff ../build/with.txt ../build/without.txt
