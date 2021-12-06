@@ -48,9 +48,9 @@ spx::server::server(unsigned int port, rlim_t max_fds)
 
   freeaddrinfo(res);
 
-  for (auto &pollfd : pollfds) {
-    pollfd.fd = -1;
-    pollfd.events = POLLIN;
+  for (auto &pfd : pollfds) {
+    pfd.fd = -1;
+    pfd.events = POLLIN;
   }
 
   get_server_pollfd().fd = server_sockfd;
@@ -58,14 +58,14 @@ spx::server::server(unsigned int port, rlim_t max_fds)
 }
 
 spx::server::~server() {
-  for (auto &pollfd : pollfds) {
-    close_connection(pollfd);
+  for (auto &pfd : pollfds) {
+    close_connection(pfd);
   }
 }
 
 void spx::server::refresh_revents() {
-  for (auto &pollfd : pollfds) {
-    pollfd.revents = 0;
+  for (auto &pfd : pollfds) {
+    pfd.revents = 0;
   }
 }
 
@@ -91,11 +91,11 @@ int spx::server::accept_connection() {
   return 0;
 }
 
-int spx::server::close_connection(pollfd &pollfd) {
-  if (pollfd.fd > 0) {
-    close(pollfd.fd);
+int spx::server::close_connection(pollfd &pfd) {
+  if (pfd.fd > 0) {
+    close(pfd.fd);
   }
-  pollfd.fd = -1;
+  pfd.fd = -1;
 
   std::cout << "Connection closed" << std::endl;
 
@@ -239,34 +239,20 @@ int spx::server::process_connection(const int &connection) {
   shutdown(sock_fd, SHUT_WR);
 
   /*
-   * get response
+   * get response send response back to requester
    */
 
-  char resp[1000000];
-  written = 0;
+  std::cout << "Response:" << std::endl;
   while ((message_size = read(sock_fd, buffer, sizeof(buffer))) > 0) {
-    strncpy(resp + written, buffer, message_size);
-    written += message_size;
+    written_size = write(connection, buffer, sizeof(buffer));
+    if (written_size < 0) {
+      std::cerr << "error on writing to socket" << std::endl;
+      // TODO: close conn
+      return -1;
+    }
+    std::cout << buffer;
   }
-
-  if (message_size < 0) {
-    std::cerr << "error on reading from conn socket" << std::endl;
-    // TODO: close conn
-    return -1;
-  }
-
-  std::cout << "Response:\n" << resp << std::endl;
-
-  /*
-   * send response back to requester
-   */
-
-  written_size = write(connection, resp, written);
-  if (written_size < 0) {
-    std::cerr << "error on writing to socket" << std::endl;
-    // TODO: close conn
-    return -1;
-  }
+  std::cout << std::endl;
 
   return 0;
 }
@@ -291,16 +277,15 @@ void spx::server::start() {
       break;
     }
 
-    if (get_server_pollfd().revents == POLLIN) {
-      accept_connection();
-    }
-
-    for (auto &pollfd : pollfds) {
-      if ((pollfd.revents & POLLHUP) > 0) {
-        close_connection(pollfd);
-      } else if ((pollfd.revents & POLLIN) > 0) {
-        std::cout << "Revents:\n" << pollfd.revents << std::endl;
-        process_connection(pollfd.fd);
+    for (auto &pfd : pollfds) {
+      pollfd &server_pfd = get_server_pollfd();
+      if (pfd.fd == server_pfd.fd && pfd.revents == POLLIN) {
+        accept_connection();
+      } else if ((pfd.revents & POLLHUP) > 0) {
+        close_connection(pfd);
+      } else if ((pfd.revents & POLLIN) > 0) {
+        std::cout << "Revents:\n" << pfd.revents << std::endl;
+        process_connection(pfd.fd);
       }
     }
 
