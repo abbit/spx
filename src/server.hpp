@@ -17,11 +17,11 @@ class Server {
   void start();
 
  private:
-  rlim_t max_fds;
-  unsigned int port;
-  std::vector<pollfd> pollfds;
+  rlim_t max_fds_;
+  unsigned int port_;
+  std::vector<pollfd> pollfds_;
 
-  constexpr pollfd& get_server_pollfd() { return pollfds.at(max_fds - 1); }
+  constexpr pollfd& get_server_pollfd() { return pollfds_.at(max_fds_ - 1); }
 
   void refresh_revents();
   void accept_connection();

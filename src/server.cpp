@@ -25,11 +25,12 @@ static const int PENDING_CONNECTIONS_QUEUE_LEN = 5;
 static const int TIMEOUT_TIME = 600000;  // in ms
 
 namespace spx {
-Server::Server(int port, rlim_t max_fds) : max_fds(max_fds), pollfds(max_fds) {
+Server::Server(int port, rlim_t max_fds)
+    : max_fds_(max_fds), pollfds_(max_fds) {
   if (port < 1 || port > 65355) {
     throw Exception("Port must be in range [1, 65355]");
   }
-  this->port = port;
+  this->port_ = port;
 
   /*
    * setup socket
@@ -61,7 +62,7 @@ Server::Server(int port, rlim_t max_fds) : max_fds(max_fds), pollfds(max_fds) {
    * setup pollfd structs
    */
 
-  for (auto &pfd : pollfds) {
+  for (auto &pfd : pollfds_) {
     pfd.fd = -1;
     pfd.events = POLLIN;
   }
@@ -71,13 +72,13 @@ Server::Server(int port, rlim_t max_fds) : max_fds(max_fds), pollfds(max_fds) {
 
 Server::~Server() {
   std::cout << "Server destructor called" << std::endl;
-  for (auto &pfd : pollfds) {
+  for (auto &pfd : pollfds_) {
     close_connection(pfd);
   }
 }
 
 void Server::refresh_revents() {
-  for (auto &pfd : pollfds) {
+  for (auto &pfd : pollfds_) {
     pfd.revents = 0;
   }
 }
@@ -88,9 +89,9 @@ void Server::accept_connection() {
     throw Exception("error on accepting connection");
   }
 
-  auto pfd = find_if(pollfds.begin(), pollfds.end(),
+  auto pfd = find_if(pollfds_.begin(), pollfds_.end(),
                      [](const pollfd &p) { return p.fd == -1; });
-  if (pfd == pollfds.end()) {
+  if (pfd == pollfds_.end()) {
     throw Exception("Connections limit exceeded!");
     // TODO: close conn?
     close(conn_fd);
@@ -263,10 +264,10 @@ void Server::start() {
     throw Exception("error on listen");
   }
 
-  std::cout << "Listening on port " << port << std::endl;
+  std::cout << "Listening on port " << port_ << std::endl;
 
   for (;;) {
-    int poll_result = poll(pollfds.data(), pollfds.size(), TIMEOUT_TIME);
+    int poll_result = poll(pollfds_.data(), pollfds_.size(), TIMEOUT_TIME);
 
     if (poll_result < 0) {
       throw Exception("Error on poll");
@@ -276,7 +277,7 @@ void Server::start() {
       break;
     }
 
-    for (auto &pfd : pollfds) {
+    for (auto &pfd : pollfds_) {
       pollfd &server_pfd = get_server_pollfd();
       if (pfd.fd == server_pfd.fd && pfd.revents == POLLIN) {
         try {
