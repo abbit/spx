@@ -1,3 +1,13 @@
 #!/usr/bin/env bash
 
-diff ../build/with.txt ../build/without.txt
+./request
+./request-with-prx
+
+out=$(diff ../build/with.txt ../build/without.txt)
+if [[ $out == "" ]]
+then
+echo "All fine, there is no difference"
+else
+echo "THERE IS A DIFFERENCE"
+echo $out
+fi

@@ -1,5 +1,5 @@
 CC=g++
-CFLAGS=-std=c++17 -I vendor
+CFLAGS=-std=c++17 -I vendor -Wall -Wextra -pedantic
 # for Solaris
 # CFLAGS=-lnsl -lsocket -lresolv -std=c++17 -I vendor
 
