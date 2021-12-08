@@ -4,8 +4,9 @@
 #include <string>
 
 namespace spx {
-class exception : public std::runtime_error {
+class Exception : public std::runtime_error {
  public:
-  exception(const std::string& message) : std::runtime_error(message) {}
+  explicit Exception(const std::string& message)
+      : std::runtime_error(message) {}
 };
 }  // namespace spx

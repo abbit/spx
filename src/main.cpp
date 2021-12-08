@@ -8,12 +8,14 @@
 #include "common/exception.hpp"
 #include "server.hpp"
 
-struct arguments {
+namespace {
+struct Arguments {
   int port;
 };
+}  // namespace
 
-arguments get_arguments(int argc, char* argv[]) {
-  arguments args;
+Arguments get_arguments(int argc, char* argv[]) {
+  Arguments args;
 
   if (argc != 2) {
     std::stringstream ss;
@@ -27,7 +29,7 @@ arguments get_arguments(int argc, char* argv[]) {
 }
 
 int main(int argc, char* argv[]) {
-  arguments args;
+  Arguments args;
   try {
     args = get_arguments(argc, argv);
   } catch (const std::invalid_argument& e) {
@@ -47,9 +49,9 @@ int main(int argc, char* argv[]) {
   std::cout << "Max file descriptors: " << max_fds << std::endl;
 
   try {
-    spx::server server(args.port, max_fds);
-    server.start();
-  } catch (const spx::exception& e) {
+    spx::Server Server(args.port, max_fds);
+    Server.start();
+  } catch (const spx::Exception& e) {
     std::cerr << "ERROR: " << e.what() << std::endl;
     return EXIT_FAILURE;
   }

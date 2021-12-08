@@ -1,3 +1,5 @@
+#pragma once
+
 #include <poll.h>
 
 #include <string>
@@ -5,12 +7,12 @@
 
 namespace spx {
 
-class server {
+class Server {
  public:
-  server(int port, rlim_t max_fds);
-  ~server();
-  server(const server&) = delete;
-  server& operator=(const server&) = delete;
+  Server(int port, rlim_t max_fds);
+  ~Server();
+  Server(const Server&) = delete;
+  Server& operator=(const Server&) = delete;
 
   void start();
 
@@ -19,7 +21,7 @@ class server {
   unsigned int port;
   std::vector<pollfd> pollfds;
 
-  constexpr pollfd& get_server_pollfd() { return pollfds.at(max_fds - 1); };
+  constexpr pollfd& get_server_pollfd() { return pollfds.at(max_fds - 1); }
 
   void refresh_revents();
   void accept_connection();

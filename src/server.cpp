@@ -10,23 +10,24 @@
 #include <unistd.h>
 
 #include <algorithm>
-#include <httpparser/httprequestparser.hpp>
-#include <httpparser/request.hpp>
-#include <httpparser/urlparser.hpp>
+#include <cstdint>
 #include <iostream>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #include "common/exception.hpp"
+#include "httpparser/httprequestparser.hpp"
+#include "httpparser/request.hpp"
+#include "httpparser/urlparser.hpp"
 
 static const int PENDING_CONNECTIONS_QUEUE_LEN = 5;
 static const int TIMEOUT_TIME = 600000;  // in ms
 
 namespace spx {
-server::server(int port, rlim_t max_fds) : max_fds(max_fds), pollfds(max_fds) {
+Server::Server(int port, rlim_t max_fds) : max_fds(max_fds), pollfds(max_fds) {
   if (port < 1 || port > 65355) {
-    throw exception("Port must be in range [1, 65355]");
+    throw Exception("Port must be in range [1, 65355]");
   }
   this->port = port;
 
@@ -41,17 +42,17 @@ server::server(int port, rlim_t max_fds) : max_fds(max_fds), pollfds(max_fds) {
   hints.ai_flags = AI_PASSIVE;
 
   if (getaddrinfo(nullptr, std::to_string(port).c_str(), &hints, &res) != 0) {
-    throw exception("Failed to get addrinfo");
+    throw Exception("Failed to get addrinfo");
   }
 
   int server_sockfd =
       socket(res->ai_family, res->ai_socktype, res->ai_protocol);
   if (server_sockfd < 0) {
-    throw exception("Failed to create socket");
+    throw Exception("Failed to create socket");
   }
 
   if (bind(server_sockfd, res->ai_addr, res->ai_addrlen) != 0) {
-    throw exception("Failed to bind socket");
+    throw Exception("Failed to bind socket");
   }
 
   freeaddrinfo(res);
@@ -68,29 +69,29 @@ server::server(int port, rlim_t max_fds) : max_fds(max_fds), pollfds(max_fds) {
   refresh_revents();
 }
 
-server::~server() {
-  std::cout << "server destructor called" << std::endl;
+Server::~Server() {
+  std::cout << "Server destructor called" << std::endl;
   for (auto &pfd : pollfds) {
     close_connection(pfd);
   }
 }
 
-void server::refresh_revents() {
+void Server::refresh_revents() {
   for (auto &pfd : pollfds) {
     pfd.revents = 0;
   }
 }
 
-void server::accept_connection() {
+void Server::accept_connection() {
   int conn_fd = accept(get_server_pollfd().fd, NULL, NULL);
   if (conn_fd < 0) {
-    throw exception("error on accepting connection");
+    throw Exception("error on accepting connection");
   }
 
   auto pfd = find_if(pollfds.begin(), pollfds.end(),
                      [](const pollfd &p) { return p.fd == -1; });
   if (pfd == pollfds.end()) {
-    throw exception("Connections limit exceeded!");
+    throw Exception("Connections limit exceeded!");
     // TODO: close conn?
     close(conn_fd);
   }
@@ -100,7 +101,7 @@ void server::accept_connection() {
   std::cout << "Connection accepted\n" << std::endl;
 }
 
-void server::close_connection(pollfd &pfd) {
+void Server::close_connection(pollfd &pfd) {
   if (pfd.fd > 0) {
     close(pfd.fd);
   }
@@ -109,7 +110,7 @@ void server::close_connection(pollfd &pfd) {
   std::cout << "Connection closed" << std::endl;
 }
 
-void server::process_connection(const int &connection) {
+void Server::process_connection(const int &connection) {
   std::cout << "Started processinng connection #" << connection << std::endl;
   /*
    * read request from socket
@@ -126,7 +127,7 @@ void server::process_connection(const int &connection) {
   }
 
   if (message_size < 0) {
-    throw exception("error on reading from socket");
+    throw Exception("error on reading from socket");
     // TODO: drop conn
   }
 
@@ -134,28 +135,28 @@ void server::process_connection(const int &connection) {
    * parse request
    */
 
-  using namespace httpparser;
-
-  Request request;
-  HttpRequestParser::ParseResult res =
-      HttpRequestParser().parse(request, request_raw, request_raw + written);
-  if (res != HttpRequestParser::ParsingCompleted) {
+  httpparser::Request request;
+  httpparser::HttpRequestParser::ParseResult res =
+      httpparser::HttpRequestParser().parse(request, request_raw,
+                                            request_raw + written);
+  if (res != httpparser::HttpRequestParser::ParsingCompleted) {
     std::stringstream ss;
     ss << "Parsing failed (code " << res << ")\n"
        << "Request:\n"
        << request_raw;
-    throw exception(ss.str());
+    throw Exception(ss.str());
   }
 
   /*
    * get ip by hostname
    */
 
-  auto hostname = find_if(
-      request.headers.begin(), request.headers.end(),
-      [](const Request::HeaderItem &item) { return item.name == "Host"; });
+  auto hostname = find_if(request.headers.begin(), request.headers.end(),
+                          [](const httpparser::Request::HeaderItem &item) {
+                            return item.name == "Host";
+                          });
   if (hostname == request.headers.end()) {
-    throw exception("Host header was not provided");
+    throw Exception("Host header was not provided");
     // TODO: close connection
   }
 
@@ -166,7 +167,7 @@ void server::process_connection(const int &connection) {
 
   struct addrinfo *servinfo;
   if (getaddrinfo(hostname->value.c_str(), "http", &hints, &servinfo) != 0) {
-    throw exception("error on getaddrinfo");
+    throw Exception("error on getaddrinfo");
     // TODO: close conn
   }
 
@@ -200,7 +201,7 @@ void server::process_connection(const int &connection) {
 
   request.headers.erase(
       remove_if(request.headers.begin(), request.headers.end(),
-                [](const Request::HeaderItem &item) {
+                [](const httpparser::Request::HeaderItem &item) {
                   return find(headers_to_remove.begin(),
                               headers_to_remove.end(),
                               item.name) != headers_to_remove.end();
@@ -209,13 +210,13 @@ void server::process_connection(const int &connection) {
 
   auto connection_header =
       find_if(request.headers.begin(), request.headers.end(),
-              [](const Request::HeaderItem &item) {
+              [](const httpparser::Request::HeaderItem &item) {
                 return item.name == "Connection";
               });
   if (connection_header != request.headers.end()) {
     connection_header->value = "close";
   }
-  request.uri = UrlParser(request.uri).path();
+  request.uri = httpparser::UrlParser(request.uri).path();
 
   /*
    * send request
@@ -226,14 +227,14 @@ void server::process_connection(const int &connection) {
 
   std::cout << "Send Request:\n" << request_str.c_str() << std::endl;
 
-  long long written_size = write(sock_fd, request_str.c_str(), request_str_len);
+  int64_t written_size = write(sock_fd, request_str.c_str(), request_str_len);
   if (written_size < 0) {
-    throw exception("error on writing to conn socket");
+    throw Exception("error on writing to conn socket");
     // TODO: close conn
   }
 
   if (static_cast<size_t>(written_size) != request_str_len) {
-    throw exception("partial write");
+    throw Exception("partial write");
     // TODO: close conn
   }
 
@@ -249,7 +250,7 @@ void server::process_connection(const int &connection) {
   while ((message_size = read(sock_fd, buffer, buffer_size)) > 0) {
     written_size = write(connection, buffer, buffer_size);
     if (written_size < 0) {
-      throw exception("error on writing to socket");
+      throw Exception("error on writing to socket");
       // TODO: close conn
     }
     // std::cout << buffer;
@@ -257,9 +258,9 @@ void server::process_connection(const int &connection) {
   std::cout << std::endl;
 }
 
-void server::start() {
+void Server::start() {
   if (listen(get_server_pollfd().fd, PENDING_CONNECTIONS_QUEUE_LEN) != 0) {
-    throw exception("error on listen");
+    throw Exception("error on listen");
   }
 
   std::cout << "Listening on port " << port << std::endl;
@@ -268,7 +269,7 @@ void server::start() {
     int poll_result = poll(pollfds.data(), pollfds.size(), TIMEOUT_TIME);
 
     if (poll_result < 0) {
-      throw exception("Error on poll");
+      throw Exception("Error on poll");
     }
 
     if (poll_result == 0) {
@@ -280,7 +281,7 @@ void server::start() {
       if (pfd.fd == server_pfd.fd && pfd.revents == POLLIN) {
         try {
           accept_connection();
-        } catch (const exception &e) {
+        } catch (const Exception &e) {
           std::cerr << e.what() << std::endl;
         }
       } else if ((pfd.revents & POLLHUP) > 0) {
@@ -289,7 +290,7 @@ void server::start() {
         std::cout << "Revents: " << pfd.revents << std::endl;
         try {
           process_connection(pfd.fd);
-        } catch (const exception &e) {
+        } catch (const Exception &e) {
           std::cerr << e.what() << std::endl;
         }
       }
