@@ -14,95 +14,102 @@
 #include <httpparser/request.hpp>
 #include <httpparser/urlparser.hpp>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
+
+#include "common/exception.hpp"
 
 static const int PENDING_CONNECTIONS_QUEUE_LEN = 5;
 static const int TIMEOUT_TIME = 600000;  // in ms
 
-spx::server::server(unsigned int port, rlim_t max_fds)
-    : port(port), max_fds(max_fds), pollfds(max_fds) {
+namespace spx {
+server::server(int port, rlim_t max_fds) : max_fds(max_fds), pollfds(max_fds) {
+  if (port < 1 || port > 65355) {
+    throw exception("Port must be in range [1, 65355]");
+  }
+  this->port = port;
+
+  /*
+   * setup socket
+   */
+
   struct addrinfo hints, *res;
-  memset(&hints, 0, sizeof(struct addrinfo));
+  memset(&hints, 0, sizeof(hints));
   hints.ai_family = PF_INET;
   hints.ai_socktype = SOCK_STREAM;
   hints.ai_flags = AI_PASSIVE;
 
   if (getaddrinfo(nullptr, std::to_string(port).c_str(), &hints, &res) != 0) {
-    std::cerr << "Error while trying to setup socket" << std::endl;
-    exit(EXIT_FAILURE);
+    throw exception("Failed to get addrinfo");
   }
 
   int server_sockfd =
       socket(res->ai_family, res->ai_socktype, res->ai_protocol);
   if (server_sockfd < 0) {
-    std::cerr << "Error while creating socket" << std::endl;
-    exit(EXIT_FAILURE);
+    throw exception("Failed to create socket");
   }
 
   if (bind(server_sockfd, res->ai_addr, res->ai_addrlen) != 0) {
-    std::cerr << "Error while binding socket" << std::endl;
-    perror("");
-    exit(EXIT_FAILURE);
+    throw exception("Failed to bind socket");
   }
 
   freeaddrinfo(res);
+
+  /*
+   * setup pollfd structs
+   */
 
   for (auto &pfd : pollfds) {
     pfd.fd = -1;
     pfd.events = POLLIN;
   }
-
   get_server_pollfd().fd = server_sockfd;
   refresh_revents();
 }
 
-spx::server::~server() {
+server::~server() {
+  std::cout << "server destructor called" << std::endl;
   for (auto &pfd : pollfds) {
     close_connection(pfd);
   }
 }
 
-void spx::server::refresh_revents() {
+void server::refresh_revents() {
   for (auto &pfd : pollfds) {
     pfd.revents = 0;
   }
 }
 
-int spx::server::accept_connection() {
+void server::accept_connection() {
   int conn_fd = accept(get_server_pollfd().fd, NULL, NULL);
   if (conn_fd < 0) {
-    std::cerr << "error on accepting connection" << std::endl;
-    return -1;
+    throw exception("error on accepting connection");
   }
 
-  int accepted = 0;
   auto pfd = find_if(pollfds.begin(), pollfds.end(),
                      [](const pollfd &p) { return p.fd == -1; });
   if (pfd == pollfds.end()) {
-    std::cerr << "Connections limit exceeded!" << std::endl;
+    throw exception("Connections limit exceeded!");
+    // TODO: close conn?
     close(conn_fd);
-    return -1;
   }
+
   pfd->fd = conn_fd;
 
   std::cout << "Connection accepted\n" << std::endl;
-
-  return 0;
 }
 
-int spx::server::close_connection(pollfd &pfd) {
+void server::close_connection(pollfd &pfd) {
   if (pfd.fd > 0) {
     close(pfd.fd);
   }
   pfd.fd = -1;
 
   std::cout << "Connection closed" << std::endl;
-
-  return 0;
 }
 
-int spx::server::process_connection(const int &connection) {
+void server::process_connection(const int &connection) {
   std::cout << "Started processinng connection #" << connection << std::endl;
   /*
    * read request from socket
@@ -119,8 +126,7 @@ int spx::server::process_connection(const int &connection) {
   }
 
   if (message_size < 0) {
-    std::cerr << "error on reading from socket" << std::endl;
-    return -1;
+    throw exception("error on reading from socket");
     // TODO: drop conn
   }
 
@@ -131,15 +137,14 @@ int spx::server::process_connection(const int &connection) {
   using namespace httpparser;
 
   Request request;
-  HttpRequestParser parser;
-
   HttpRequestParser::ParseResult res =
-      parser.parse(request, request_raw, request_raw + written);
-
+      HttpRequestParser().parse(request, request_raw, request_raw + written);
   if (res != HttpRequestParser::ParsingCompleted) {
-    std::cerr << "Parsing failed - " << res << std::endl;
-    std::cerr << "Request:\n" << request_raw << std::endl;
-    return -1;
+    std::stringstream ss;
+    ss << "Parsing failed (code " << res << ")\n"
+       << "Request:\n"
+       << request_raw;
+    throw exception(ss.str());
   }
 
   /*
@@ -150,21 +155,19 @@ int spx::server::process_connection(const int &connection) {
       request.headers.begin(), request.headers.end(),
       [](const Request::HeaderItem &item) { return item.name == "Host"; });
   if (hostname == request.headers.end()) {
-    std::cerr << "Host header was not provided" << std::endl;
+    throw exception("Host header was not provided");
     // TODO: close connection
-    return -1;
   }
 
   struct addrinfo hints;
-  memset(&hints, 0, sizeof hints);
+  memset(&hints, 0, sizeof(hints));
   hints.ai_family = AF_INET;
   hints.ai_socktype = SOCK_STREAM;
 
   struct addrinfo *servinfo;
   if (getaddrinfo(hostname->value.c_str(), "http", &hints, &servinfo) != 0) {
-    std::cerr << "error on getaddrinfo" << std::endl;
+    throw exception("error on getaddrinfo");
     // TODO: close conn
-    return -1;
   }
 
   /*
@@ -223,17 +226,15 @@ int spx::server::process_connection(const int &connection) {
 
   std::cout << "Send Request:\n" << request_str.c_str() << std::endl;
 
-  int written_size = write(sock_fd, request_str.c_str(), request_str_len);
+  long long written_size = write(sock_fd, request_str.c_str(), request_str_len);
   if (written_size < 0) {
-    std::cerr << "error on writing to conn socket" << std::endl;
+    throw exception("error on writing to conn socket");
     // TODO: close conn
-    return -1;
   }
 
-  if (written_size != request_str_len) {
-    std::cerr << "partial write" << std::endl;
+  if (static_cast<size_t>(written_size) != request_str_len) {
+    throw exception("partial write");
     // TODO: close conn
-    return -1;
   }
 
   shutdown(sock_fd, SHUT_WR);
@@ -243,24 +244,22 @@ int spx::server::process_connection(const int &connection) {
    */
 
   std::cout << "Response:" << std::endl;
-  while ((message_size = read(sock_fd, buffer, sizeof(buffer))) > 0) {
-    written_size = write(connection, buffer, sizeof(buffer));
+  size_t buffer_size = sizeof(buffer);
+  // TODO: blocking, fix
+  while ((message_size = read(sock_fd, buffer, buffer_size)) > 0) {
+    written_size = write(connection, buffer, buffer_size);
     if (written_size < 0) {
-      std::cerr << "error on writing to socket" << std::endl;
+      throw exception("error on writing to socket");
       // TODO: close conn
-      return -1;
     }
-    std::cout << buffer;
+    // std::cout << buffer;
   }
   std::cout << std::endl;
-
-  return 0;
 }
 
-void spx::server::start() {
+void server::start() {
   if (listen(get_server_pollfd().fd, PENDING_CONNECTIONS_QUEUE_LEN) != 0) {
-    std::cerr << "error on listen" << std::endl;
-    exit(EXIT_FAILURE);
+    throw exception("error on listen");
   }
 
   std::cout << "Listening on port " << port << std::endl;
@@ -269,8 +268,7 @@ void spx::server::start() {
     int poll_result = poll(pollfds.data(), pollfds.size(), TIMEOUT_TIME);
 
     if (poll_result < 0) {
-      std::cerr << "Error on poll" << std::endl;
-      exit(EXIT_FAILURE);
+      throw exception("Error on poll");
     }
 
     if (poll_result == 0) {
@@ -280,15 +278,24 @@ void spx::server::start() {
     for (auto &pfd : pollfds) {
       pollfd &server_pfd = get_server_pollfd();
       if (pfd.fd == server_pfd.fd && pfd.revents == POLLIN) {
-        accept_connection();
+        try {
+          accept_connection();
+        } catch (const exception &e) {
+          std::cerr << e.what() << std::endl;
+        }
       } else if ((pfd.revents & POLLHUP) > 0) {
         close_connection(pfd);
       } else if ((pfd.revents & POLLIN) > 0) {
-        std::cout << "Revents:\n" << pfd.revents << std::endl;
-        process_connection(pfd.fd);
+        std::cout << "Revents: " << pfd.revents << std::endl;
+        try {
+          process_connection(pfd.fd);
+        } catch (const exception &e) {
+          std::cerr << e.what() << std::endl;
+        }
       }
     }
 
     refresh_revents();
   }
 }
+}  // namespace spx
