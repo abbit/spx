@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+
+rootdir=$(dirname $(dirname $(realpath $0)))
+cpplint \
+  --filter=-legal,-readability/todo \
+  $rootdir/src/**/* $rootdir/src/*
