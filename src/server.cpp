@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <iostream>
 #include <sstream>
@@ -17,114 +18,102 @@
 #include <vector>
 
 #include "common/exception.hpp"
+#include "common/http_request.hpp"
+#include "common/server_socket.hpp"
 #include "httpparser/httprequestparser.hpp"
 #include "httpparser/request.hpp"
 #include "httpparser/urlparser.hpp"
 
-static const int PENDING_CONNECTIONS_QUEUE_LEN = 5;
-static const int TIMEOUT_TIME = 600000;  // in ms
-
 namespace spx {
-Server::Server(int port, rlim_t max_fds)
-    : max_fds_(max_fds), pollfds_(max_fds) {
-  if (port < 1 || port > 65355) {
-    throw Exception("Port must be in range [1, 65355]");
-  }
-  this->port_ = port;
+namespace http = httpparser;
 
-  /*
-   * setup socket
-   */
+static const int TIMEOUT = 600000;  // in ms
+static const int PENDING_CONNECTIONS_QUEUE_LEN = 5;
+static const int MAX_REQUEST_SIZE = 16 * 1024;  // 16 kb
 
-  struct addrinfo hints, *res;
-  memset(&hints, 0, sizeof(hints));
-  hints.ai_family = PF_INET;
-  hints.ai_socktype = SOCK_STREAM;
-  hints.ai_flags = AI_PASSIVE;
-
-  if (getaddrinfo(nullptr, std::to_string(port).c_str(), &hints, &res) != 0) {
-    throw Exception("Failed to get addrinfo");
-  }
-
-  int server_sockfd =
-      socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-  if (server_sockfd < 0) {
-    throw Exception("Failed to create socket");
-  }
-
-  if (bind(server_sockfd, res->ai_addr, res->ai_addrlen) != 0) {
-    throw Exception("Failed to bind socket");
-  }
-
-  freeaddrinfo(res);
-
-  /*
-   * setup pollfd structs
-   */
-
+Server::Server(uint16_t port, rlim_t max_fds)
+    : server_socket_(port), pollfds_(max_fds) {
   for (auto &pfd : pollfds_) {
-    pfd.fd = -1;
-    pfd.events = POLLIN;
+    pfd = {INVALID_SOCKET_FD, POLL_IN, 0};
   }
-  get_server_pollfd().fd = server_sockfd;
-  refresh_revents();
+  pollfds_.begin()->fd = server_socket_.getFileDescriptor();
 }
 
-Server::~Server() {
-  std::cout << "Server destructor called" << std::endl;
-  for (auto &pfd : pollfds_) {
-    close_connection(pfd);
+Server::~Server() { std::cout << "Server destructor called" << std::endl; }
+
+void Server::start() {
+  server_socket_.listen(PENDING_CONNECTIONS_QUEUE_LEN);
+  std::cout << "Listening on port " << server_socket_.getPort() << std::endl;
+
+  for (;;) {
+    /*
+     * setup pollfd struct
+     */
+    auto pollfds_it = ++pollfds_.begin();
+    for (const auto &client : clients_) {
+      assert(pollfds_it != pollfds_.end());
+      pollfds_it->fd = client.first;
+      ++pollfds_it;
+    }
+    refreshRevents();
+
+    int poll_result = poll(pollfds_.data(), clients_.size() + 1, TIMEOUT);
+
+    if (poll_result < 0) {
+      std::cerr << "error on poll()" << std::endl;
+      continue;
+    }
+
+    if (poll_result == 0) {
+      std::cout << "poll() timed out" << std::endl;
+      continue;
+    }
+
+    for (const auto &pfd : pollfds_) {
+      // TODO: handle POLLERR
+      if (server_socket_.getFileDescriptor() == pfd.fd &&
+          pfd.revents == POLLIN) {
+        try {
+          acceptConnection();
+        } catch (const Exception &e) {
+          std::cerr << e.what() << std::endl;
+        }
+      } else if ((pfd.revents & POLLHUP) > 0) {
+        closeConnection(clients_[pfd.fd]);
+      } else if ((pfd.revents & POLLIN) > 0) {
+        try {
+          handleConnection(clients_[pfd.fd]);
+        } catch (const Exception &e) {
+          std::cerr << e.what() << std::endl;
+        }
+      }
+    }
   }
 }
 
-void Server::refresh_revents() {
-  for (auto &pfd : pollfds_) {
-    pfd.revents = 0;
-  }
+void Server::acceptConnection() {
+  TcpSocket conn = server_socket_.accept();
+  int id = conn.getFileDescriptor();
+  clients_[id] = std::move(conn);
+  std::cout << "\nConnection accepted " << clients_[id] << std::endl
+            << std::endl;
 }
 
-void Server::accept_connection() {
-  int conn_fd = accept(get_server_pollfd().fd, NULL, NULL);
-  if (conn_fd < 0) {
-    throw Exception("error on accepting connection");
-  }
-
-  auto pfd = find_if(pollfds_.begin(), pollfds_.end(),
-                     [](const pollfd &p) { return p.fd == -1; });
-  if (pfd == pollfds_.end()) {
-    throw Exception("Connections limit exceeded!");
-    // TODO: close conn?
-    close(conn_fd);
-  }
-
-  pfd->fd = conn_fd;
-
-  std::cout << "Connection accepted\n" << std::endl;
+void Server::closeConnection(const TcpSocket &connection) {
+  clients_.erase(connection.getFileDescriptor());
+  std::cout << "Connection closed " << connection << std::endl;
 }
 
-void Server::close_connection(pollfd &pfd) {
-  if (pfd.fd > 0) {
-    close(pfd.fd);
-  }
-  pfd.fd = -1;
-
-  std::cout << "Connection closed" << std::endl;
-}
-
-void Server::process_connection(const int &connection) {
-  std::cout << "Started processinng connection #" << connection << std::endl;
-  /*
-   * read request from socket
-   */
-  char request_raw[1000000];
+std::string readRequest(const TcpSocket &connection) {
+  char request_raw[MAX_REQUEST_SIZE];
   char buffer[BUFSIZ];
   int message_size;
   int written = 0;
-  while ((message_size = read(connection, buffer, sizeof(buffer))) > 0) {
+  while ((message_size = connection.receive(buffer, sizeof(buffer))) > 0) {
     strncpy(request_raw + written, buffer, message_size);
     written += message_size;
+    // TODO: check request_raw bounds
     if (strstr(request_raw, "\r\n\r\n") != nullptr) break;
-    // write(STDOUT_FILENO, buffer, message_size);
   }
 
   if (message_size < 0) {
@@ -132,172 +121,93 @@ void Server::process_connection(const int &connection) {
     // TODO: drop conn
   }
 
-  /*
-   * parse request
-   */
+  return std::string(request_raw, written);
+}
 
-  httpparser::Request request;
-  httpparser::HttpRequestParser::ParseResult res =
-      httpparser::HttpRequestParser().parse(request, request_raw,
-                                            request_raw + written);
-  if (res != httpparser::HttpRequestParser::ParsingCompleted) {
-    std::stringstream ss;
-    ss << "Parsing failed (code " << res << ")\n"
-       << "Request:\n"
-       << request_raw;
-    throw Exception(ss.str());
-  }
-
-  /*
-   * get ip by hostname
-   */
-
-  auto hostname = find_if(request.headers.begin(), request.headers.end(),
-                          [](const httpparser::Request::HeaderItem &item) {
-                            return item.name == "Host";
-                          });
-  if (hostname == request.headers.end()) {
-    throw Exception("Host header was not provided");
-    // TODO: close connection
-  }
-
+TcpSocket connectToHost(const std::string &hostname, const std::string &port) {
+  // get addrinfo by hostname
   struct addrinfo hints;
   memset(&hints, 0, sizeof(hints));
   hints.ai_family = AF_INET;
   hints.ai_socktype = SOCK_STREAM;
 
   struct addrinfo *servinfo;
-  if (getaddrinfo(hostname->value.c_str(), "http", &hints, &servinfo) != 0) {
-    throw Exception("error on getaddrinfo");
+  if (getaddrinfo(hostname.c_str(), port.c_str(), &hints, &servinfo) != 0) {
+    throw Exception("error on getaddrinfo()");
     // TODO: close conn
   }
 
-  /*
-   * connect to host
-   */
-
-  int sock_fd = -1;
-  for (struct addrinfo *p = servinfo; p != NULL; p = p->ai_next) {
+  // connect to host
+  int sock_fd = INVALID_SOCKET_FD;
+  for (struct addrinfo *p = servinfo; p != nullptr; p = p->ai_next) {
     sock_fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
-    if (sock_fd == -1) continue;
+    if (sock_fd == INVALID_SOCKET_FD) continue;
 
     if (connect(sock_fd, p->ai_addr, p->ai_addrlen) == 0) {
       struct sockaddr_in *in = (struct sockaddr_in *)p->ai_addr;
-      printf("Connected to %s (%s), port %d\n", hostname->value.c_str(),
-             inet_ntoa(in->sin_addr), ntohs(in->sin_port));
+      std::cout << "Connected to " << hostname << "(" << inet_ntoa(in->sin_addr)
+                << ")"
+                << ", port " << ntohs(in->sin_port) << std::endl;
       break;
     }
 
     close(sock_fd);
+    sock_fd = INVALID_SOCKET_FD;
+  }
+  freeaddrinfo(servinfo);
+
+  if (sock_fd == INVALID_SOCKET_FD) {
+    std::stringstream ss;
+    ss << "Can't connect to host " << hostname << ":" << port;
+    throw Exception(ss.str());
   }
 
-  std::cout << "Got Request:\n" << request.inspect() << std::endl;
+  return TcpSocket(sock_fd);
+}
 
-  /*
-   * prepare request
-   */
-
-  static const std::vector<std::string> headers_to_remove{
-      "Proxy-Connection", "Upgrade-Insecure-Requests", "Accept-Encoding"};
-
-  request.headers.erase(
-      remove_if(request.headers.begin(), request.headers.end(),
-                [](const httpparser::Request::HeaderItem &item) {
-                  return find(headers_to_remove.begin(),
-                              headers_to_remove.end(),
-                              item.name) != headers_to_remove.end();
-                }),
-      request.headers.end());
-
-  auto connection_header =
-      find_if(request.headers.begin(), request.headers.end(),
-              [](const httpparser::Request::HeaderItem &item) {
-                return item.name == "Connection";
-              });
-  if (connection_header != request.headers.end()) {
-    connection_header->value = "close";
-  }
-  request.uri = httpparser::UrlParser(request.uri).path();
-
-  /*
-   * send request
-   */
-
-  std::string request_str = request.inspect();
-  size_t request_str_len = std::char_traits<char>::length(request_str.c_str());
-
-  std::cout << "Send Request:\n" << request_str.c_str() << std::endl;
-
-  int64_t written_size = write(sock_fd, request_str.c_str(), request_str_len);
-  if (written_size < 0) {
-    throw Exception("error on writing to conn socket");
-    // TODO: close conn
-  }
-
-  if (static_cast<size_t>(written_size) != request_str_len) {
-    throw Exception("partial write");
-    // TODO: close conn
-  }
-
-  shutdown(sock_fd, SHUT_WR);
-
-  /*
-   * get response send response back to requester
-   */
-
-  std::cout << "Response:" << std::endl;
+void translateData(const TcpSocket &from, const TcpSocket &to) {
+  static char buffer[BUFSIZ];
   size_t buffer_size = sizeof(buffer);
+  int message_size;
+  int64_t written_size;
   // TODO: blocking, fix
-  while ((message_size = read(sock_fd, buffer, buffer_size)) > 0) {
-    written_size = write(connection, buffer, buffer_size);
+  while ((message_size = from.receive(buffer, buffer_size)) > 0) {
+    written_size = to.send(buffer, buffer_size);
     if (written_size < 0) {
       throw Exception("error on writing to socket");
       // TODO: close conn
     }
-    // std::cout << buffer;
+
+    if (static_cast<size_t>(written_size) != buffer_size) {
+      throw Exception("partial write");
+      // TODO: close conn or not???
+    }
   }
-  std::cout << std::endl;
 }
 
-void Server::start() {
-  if (listen(get_server_pollfd().fd, PENDING_CONNECTIONS_QUEUE_LEN) != 0) {
-    throw Exception("error on listen");
-  }
+void Server::handleConnection(const TcpSocket &connection) {
+  std::cout << "\nHandling connection " << connection << std::endl << std::endl;
 
-  std::cout << "Listening on port " << port_ << std::endl;
+  std::string received_request_str = readRequest(connection);
+  std::cout << "Received Request:\n" << received_request_str << std::endl;
+  HttpRequest request(received_request_str);
 
-  for (;;) {
-    int poll_result = poll(pollfds_.data(), pollfds_.size(), TIMEOUT_TIME);
+  // TODO: save origin connection
+  TcpSocket origin = connectToHost(request.url.hostname(),
+                                   std::to_string(request.url.httpPort()));
+  origin.send(request.toString());
+  // TODO: remove!
+  shutdown(origin.getFileDescriptor(), SHUT_WR);
+  std::cout << "\nSend Request:\n" << request.toString() << std::endl;
 
-    if (poll_result < 0) {
-      throw Exception("Error on poll");
-    }
+  // get response send response back to requester
+  translateData(origin, connection);
+  std::cout << "\nSend response\n" << std::endl;
+}
 
-    if (poll_result == 0) {
-      break;
-    }
-
-    for (auto &pfd : pollfds_) {
-      pollfd &server_pfd = get_server_pollfd();
-      if (pfd.fd == server_pfd.fd && pfd.revents == POLLIN) {
-        try {
-          accept_connection();
-        } catch (const Exception &e) {
-          std::cerr << e.what() << std::endl;
-        }
-      } else if ((pfd.revents & POLLHUP) > 0) {
-        close_connection(pfd);
-      } else if ((pfd.revents & POLLIN) > 0) {
-        std::cout << "Revents: " << pfd.revents << std::endl;
-        try {
-          process_connection(pfd.fd);
-        } catch (const Exception &e) {
-          std::cerr << e.what() << std::endl;
-        }
-      }
-    }
-
-    refresh_revents();
+void Server::refreshRevents() {
+  for (auto &pfd : pollfds_) {
+    pfd.revents = 0;
   }
 }
 }  // namespace spx

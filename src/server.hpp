@@ -2,14 +2,18 @@
 
 #include <poll.h>
 
+#include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
+
+#include "common/server_socket.hpp"
 
 namespace spx {
 
 class Server {
  public:
-  Server(int port, rlim_t max_fds);
+  Server(uint16_t port, rlim_t max_fds);
   ~Server();
   Server(const Server&) = delete;
   Server& operator=(const Server&) = delete;
@@ -17,15 +21,13 @@ class Server {
   void start();
 
  private:
-  rlim_t max_fds_;
-  unsigned int port_;
+  ServerSocket server_socket_;
   std::vector<pollfd> pollfds_;
+  std::map<int, TcpSocket> clients_;
 
-  constexpr pollfd& get_server_pollfd() { return pollfds_.at(max_fds_ - 1); }
-
-  void refresh_revents();
-  void accept_connection();
-  void process_connection(const int& connection);
-  void close_connection(pollfd& pollfd);
+  void refreshRevents();
+  void acceptConnection();
+  void handleConnection(const TcpSocket& connection);
+  void closeConnection(const TcpSocket& connection);
 };
 }  // namespace spx

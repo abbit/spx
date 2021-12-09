@@ -31,6 +31,10 @@ class HttpRequestParser {
     return consume(req, begin, end);
   }
 
+  ParseResult parse(Request &req, const std::string &str) {
+    return consume(req, str.data(), str.data() + str.size());
+  }
+
  private:
   static bool checkIfConnection(const Request::HeaderItem &item) {
     return strcasecmp(item.name.c_str(), "Connection") == 0;

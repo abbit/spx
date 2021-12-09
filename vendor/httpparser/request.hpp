@@ -42,7 +42,7 @@ struct Request {
     stream << CRLF << CRLF;
 
     std::string data(content.begin(), content.end());
-    stream << data << "\n";
+    stream << data << CRLF;
     return stream.str();
   }
 };
