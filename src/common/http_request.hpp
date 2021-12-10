@@ -11,8 +11,10 @@
 
 namespace spx {
 namespace {
-static const std::string HEADERS_TO_REMOVE[] = {
-    "Proxy-Connection", "Upgrade-Insecure-Requests", "Accept-Encoding"};
+const std::string HEADERS_TO_REMOVE[] = {
+    "Proxy-Connection",
+    "Upgrade-Insecure-Requests",
+};
 
 httpparser::Request parseRequestStr(const std::string &request_str) {
   httpparser::Request request;

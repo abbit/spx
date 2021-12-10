@@ -3,11 +3,15 @@ CFLAGS=-std=c++17 -I vendor -Wall -Wextra -pedantic
 # for Solaris
 # CFLAGS=-lnsl -lsocket -lresolv -std=c++17 -I vendor
 
-SRC=src/main.cpp src/server.cpp
-OUT=build/out
+ROOT_DIR=/Users/abbit/dev/university/os/spx
+TARGET=$(ROOT_DIR)/build/out
+SRC=$(shell find $(ROOT_DIR)/src -type f -name *.cpp)
+PORT=7331
 
-$(OUT): kill clean dir $(SRC)
-	$(CC) $(SRC) -o $(OUT) $(CFLAGS)
+all: kill clean dir $(TARGET)
+
+$(TARGET): $(SRC)
+	$(CC) $(SRC) -o $(TARGET) $(CFLAGS)
 
 dir:
 	-mkdir build
@@ -16,9 +20,6 @@ clean:
 	-rm -rf build
 
 kill:
-	lsof -t -i tcp:7331 | xargs kill
+	lsof -t -i tcp:$(PORT) | xargs kill
 
-run:
-	$(OUT)
-
-.PHONY: dir clean kill run
+.PHONY: dir clean kill all

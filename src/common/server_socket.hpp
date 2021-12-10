@@ -8,11 +8,14 @@
 
 #include "tcp_socket.hpp"
 
+// TODO: write errno to exceptions
+
 namespace spx {
 class ServerSocket : public TcpSocket {
  public:
   explicit ServerSocket(uint16_t port) : TcpSocket(), port_(port) {
-    struct addrinfo hints, *res;
+    struct addrinfo hints {
+    }, *res;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = PF_INET;
     hints.ai_socktype = SOCK_STREAM;
@@ -36,16 +39,16 @@ class ServerSocket : public TcpSocket {
     }
   }
 
-  TcpSocket accept() {
+  std::unique_ptr<TcpSocket> accept() {
     int conn_fd = ::accept(getFileDescriptor(), nullptr, nullptr);
     if (conn_fd == INVALID_SOCKET_FD) {
       throw Exception("error on accepting connection");
     }
 
-    return TcpSocket(conn_fd);
+    return TcpSocketFactory::newTcpSocket(conn_fd);
   }
 
-  uint16_t getPort() { return port_; }
+  uint16_t getPort() const { return port_; }
 
  private:
   uint16_t port_;

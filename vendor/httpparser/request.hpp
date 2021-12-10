@@ -12,7 +12,7 @@
 
 namespace httpparser {
 
-static const std::string CRLF = "\r\n";
+const std::string CRLF = "\r\n";
 
 struct Request {
   Request() : versionMajor(0), versionMinor(0), keepAlive(false) {}
