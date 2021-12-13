@@ -40,7 +40,11 @@ class HttpRequest {
   httpparser::UrlParser url;
   std::map<std::string, std::string> headers;
 
-  explicit HttpRequest(const std::string &request_str) {
+  HttpRequest() = default;
+
+  explicit HttpRequest(const std::string &request_str) { parse(request_str); }
+
+  void parse(const std::string &request_str) {
     httpparser::Request r = parseRequestStr(request_str);
     versionMajor = r.versionMajor;
     versionMinor = r.versionMinor;
