@@ -19,11 +19,12 @@ class Server {
   Server& operator=(const Server&) = delete;
 
   void start();
+  static void stop(int _ignored);
 
  private:
   std::unique_ptr<PassiveSocket> server_socket_;
   ClientsList clients_;
-  bool is_running_{false};
+  static bool is_running_;
 
   void acceptConnection();
   void closeConnection(const ActiveSocket& connection);

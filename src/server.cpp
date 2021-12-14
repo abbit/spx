@@ -23,8 +23,15 @@ const int TIMEOUT = 600000;  // in ms
 const int PENDING_CONNECTIONS_QUEUE_LEN = 5;
 const int MAX_REQUEST_SIZE = 16 * 1024;  // 16 kb
 
+bool Server::is_running_ = false;
+
+void Server::stop(int _ignored) { Server::is_running_ = false; }
+
 Server::Server(uint16_t port, rlim_t max_fds) : clients_(max_fds) {
   server_socket_ = PassiveSocket::create(port);
+
+  signal(SIGTERM, Server::stop);
+  signal(SIGINT, Server::stop);
 }
 
 Server::~Server() { std::cout << "Server destructor called" << std::endl; }
