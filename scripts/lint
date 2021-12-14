@@ -2,5 +2,5 @@
 
 rootdir=$(dirname $(dirname $(realpath $0)))
 cpplint \
-  --filter=-legal,-readability/todo \
+  --filter=-legal,-readability/todo,-build/include_subdir,-runtime/references \
   $rootdir/src/**/* $rootdir/src/*
