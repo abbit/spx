@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+
+infer run -- g++ -std=c++17 -I vendor -Wall -Wextra -pedantic -c $(find src -type f -name "*.cpp" | tr '\n' ' ')
+rm *.o
