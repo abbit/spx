@@ -4,6 +4,12 @@
 #include <utility>
 
 namespace spx {
+namespace {
+inline size_t calculateMaximumClients(size_t max_fds) {
+  return (max_fds - 4) / 2;
+}
+}  // namespace
+
 std::unique_ptr<Client> Client::create() {
   return std::unique_ptr<Client>(new Client());
 }
@@ -12,7 +18,8 @@ Client::Client() = default;
 
 std::deque<std::vector<char>>& Client::getBuffer() { return buffer; }
 
-ClientsList::ClientsList(size_t max_fds) : clients_((max_fds - 4) / 2) {}
+ClientsList::ClientsList(size_t max_fds)
+    : clients_(calculateMaximumClients(max_fds)) {}
 
 std::vector<pollfd> ClientsList::getPollfds() {
   std::vector<pollfd> res;
