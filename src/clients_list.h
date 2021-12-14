@@ -3,10 +3,11 @@
 #include <sys/poll.h>
 
 #include <deque>
+#include <memory>
 #include <vector>
 
-#include "common/active_socket.hpp"
-#include "common/http_request.hpp"
+#include "common/active_socket.h"
+#include "common/http_request.h"
 
 namespace spx {
 class Client {
@@ -30,7 +31,7 @@ class Client {
  private:
   std::deque<std::vector<char>> buffer;
 
-  Client() = default;
+  Client();
 };
 
 class ClientsList {
@@ -38,7 +39,6 @@ class ClientsList {
   explicit ClientsList(size_t max_clients);
 
   Client& getClient(int fd);
-  ActiveSocket& getConnection(int fd);
   std::vector<pollfd> getPollfds();
   size_t size();
 

@@ -1,4 +1,4 @@
-#include "server.hpp"
+#include "server.h"
 
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -9,23 +9,28 @@
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <deque>
 #include <iostream>
+#include <memory>
 #include <string>
+#include <utility>
 
-#include "common/exception.hpp"
-#include "common/http_request.hpp"
-#include "common/passive_socket.hpp"
+#include "common/exception.h"
+#include "common/http_request.h"
+#include "common/passive_socket.h"
 
 namespace spx {
 namespace http = httpparser;
 
+namespace {
 const int TIMEOUT = 600000;  // in ms
 const int PENDING_CONNECTIONS_QUEUE_LEN = 5;
 const int MAX_REQUEST_SIZE = 16 * 1024;  // 16 kb
+}  // namespace
 
 bool Server::is_running_ = false;
 
-void Server::stop(int _ignored) { Server::is_running_ = false; }
+void Server::stop(int) { Server::is_running_ = false; }
 
 Server::Server(uint16_t port, rlim_t max_fds) : clients_(max_fds) {
   server_socket_ = PassiveSocket::create(port);
@@ -88,7 +93,7 @@ void Server::start() {
   }
 }
 
-void Server::handleServerSocketEvents(const short &events_bitmask) {
+void Server::handleServerSocketEvents(const int &events_bitmask) {
   if ((events_bitmask & (POLLERR | POLLNVAL)) > 0) {
     throw Exception("Error on server socket");
   } else if ((events_bitmask & POLLIN) > 0) {
@@ -101,7 +106,7 @@ void Server::handleServerSocketEvents(const short &events_bitmask) {
   }
 }
 
-void Server::handleClientSocketEvents(Client &client, const short &revents) {
+void Server::handleClientSocketEvents(Client &client, const int &revents) {
   try {
     if ((revents & POLLERR) > 0) {
       closeConnection(*client.client_connection);
@@ -160,14 +165,14 @@ std::unique_ptr<ActiveSocket> connectToHost(const std::string &hostname,
   }
 
   // connect to host
-  std::unique_ptr<ActiveSocket> res;
+  std::unique_ptr<ActiveSocket> res = nullptr;
   for (addrinfo *p = servinfo; p != nullptr; p = p->ai_next) {
     try {
       std::unique_ptr<ActiveSocket> socket =
           ActiveSocket::create(p, ConnectionType::Enum::to_server);
       socket->connect(p->ai_addr, p->ai_addrlen);
 
-      auto *in = (sockaddr_in *)p->ai_addr;
+      auto *in = reinterpret_cast<sockaddr_in *>(p->ai_addr);
       std::cout << "Connected to " << hostname << "(" << inet_ntoa(in->sin_addr)
                 << ")"
                 << ", port " << ntohs(in->sin_port) << std::endl;
@@ -179,7 +184,7 @@ std::unique_ptr<ActiveSocket> connectToHost(const std::string &hostname,
   }
   freeaddrinfo(servinfo);
 
-  if (!res->isValid()) {
+  if (!res || !res->isValid()) {
     std::stringstream ss;
     ss << "Can't connect to host " << hostname << ":" << port;
     throw Exception(ss.str());
@@ -312,7 +317,6 @@ void Server::sendResponseToClient(Client &client) {
 
     if (written_size != chunk.size()) {
       throw Exception("partial write");
-      // TODO: close conn or not???
     }
 
     std::cout << "[" << client_conn << "] "

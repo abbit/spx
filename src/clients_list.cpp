@@ -1,11 +1,14 @@
-#include "clients_list.hpp"
+#include "clients_list.h"
 
-#include <iostream>
+#include <memory>
+#include <utility>
 
 namespace spx {
 std::unique_ptr<Client> Client::create() {
   return std::unique_ptr<Client>(new Client());
 }
+
+Client::Client() = default;
 
 std::deque<std::vector<char>>& Client::getBuffer() { return buffer; }
 
@@ -49,14 +52,6 @@ Client& ClientsList::getClient(int fd) {
   return *clients_[fd];
 }
 
-ActiveSocket& ClientsList::getConnection(int fd) {
-  Client& client = getClient(fd);
-  if (*client.client_connection == fd)
-    return *client.client_connection;
-  else
-    return *client.server_connection;
-}
-
 void ClientsList::acceptConnection(
     std::unique_ptr<ActiveSocket>&& client_conn) {
   int client_fd = client_conn->getFileDescriptor();
@@ -64,6 +59,7 @@ void ClientsList::acceptConnection(
   clients_[client_fd]->client_connection = std::move(client_conn);
 }
 
+// TODO: improve performance
 void ClientsList::closeConnection(const ActiveSocket& connection) {
   if (connection.isValid()) {
     for (auto& c : clients_) {

@@ -1,14 +1,11 @@
 #pragma once
 
-#include <poll.h>
-
 #include <cstdint>
-#include <map>
-#include <string>
+#include <memory>
 #include <vector>
 
-#include "clients_list.hpp"
-#include "common/passive_socket.hpp"
+#include "clients_list.h"
+#include "common/passive_socket.h"
 
 namespace spx {
 class Server {
@@ -19,7 +16,7 @@ class Server {
   Server& operator=(const Server&) = delete;
 
   void start();
-  static void stop(int _ignored);
+  static void stop(int);
 
  private:
   std::unique_ptr<PassiveSocket> server_socket_;
@@ -29,8 +26,8 @@ class Server {
   void acceptConnection();
   void closeConnection(const ActiveSocket& connection);
 
-  void handleServerSocketEvents(const short& events_bitmask);
-  void handleClientSocketEvents(Client& client, const short& revents);
+  void handleServerSocketEvents(const int& events_bitmask);
+  void handleClientSocketEvents(Client& client, const int& revents);
 
   void readRequestFromClient(Client& client);
   void sendRequestToServer(Client& client);

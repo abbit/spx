@@ -2,8 +2,8 @@
 #include <sstream>
 #include <stdexcept>
 
-#include "common/exception.hpp"
-#include "server.hpp"
+#include "common/exception.h"
+#include "server.h"
 
 namespace {
 const int PORT_MIN = 1;
