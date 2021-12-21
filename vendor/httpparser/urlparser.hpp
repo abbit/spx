@@ -197,7 +197,7 @@ class UrlParser {
           }
           break;
         case IPV6Hostname:
-          abort();  // TODO
+          abort();
         case PortOrPassword:
           if (isdigit(ch)) {
             portOrPassword += ch;
