@@ -1,6 +1,3 @@
-
-#pragma once
-
 #include "active_socket.h"
 
 #include <netdb.h>
@@ -12,32 +9,16 @@
 #include "tcp_socket.h"
 
 namespace spx {
-const char *ConnectionType::toString(const Enum &type) {
-  switch (type) {
-    case Enum::to_server:
-      return "to_server";
-    case Enum::to_client:
-      return "to_client";
-    default:
-      return "unknown";
-  }
+ActiveSocket::ActiveSocket(int fd) : TcpSocket(fd) {}
+
+ActiveSocket::ActiveSocket(const addrinfo *const info) : TcpSocket(info) {}
+
+std::unique_ptr<ActiveSocket> ActiveSocket::create(int fd) {
+  return std::unique_ptr<ActiveSocket>(new ActiveSocket(fd));
 }
 
-ActiveSocket::ActiveSocket(int fd, const ConnectionType::Enum &type)
-    : TcpSocket(fd), type_(type) {}
-
-ActiveSocket::ActiveSocket(const addrinfo *const info,
-                           const ConnectionType::Enum &type)
-    : TcpSocket(info), type_(type) {}
-
-std::unique_ptr<ActiveSocket> ActiveSocket::create(int fd,
-                                                   ConnectionType::Enum type) {
-  return std::unique_ptr<ActiveSocket>(new ActiveSocket(fd, type));
-}
-
-std::unique_ptr<ActiveSocket> ActiveSocket::create(const addrinfo *const info,
-                                                   ConnectionType::Enum type) {
-  return std::unique_ptr<ActiveSocket>(new ActiveSocket(info, type));
+std::unique_ptr<ActiveSocket> ActiveSocket::create(const addrinfo *const info) {
+  return std::unique_ptr<ActiveSocket>(new ActiveSocket(info));
 }
 
 size_t ActiveSocket::send(const void *data_ptr, size_t data_len) const {
@@ -66,6 +47,10 @@ size_t ActiveSocket::receive(void *buffer, size_t buffer_len) const {
     throw Exception(ss.str());
   }
 
+  if (res == 0) {
+    throw ZeroLengthMessageException();
+  }
+
   return static_cast<size_t>(res);
 }
 
@@ -84,5 +69,4 @@ void ActiveSocket::connect(const sockaddr *const addr,
   }
 }
 
-ConnectionType::Enum ActiveSocket::getType() const { return type_; }
 }  // namespace spx
