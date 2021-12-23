@@ -5,6 +5,7 @@ namespace {
 const char *HEADERS_TO_REMOVE[] = {
     "Proxy-Connection",
     "Upgrade-Insecure-Requests",
+    "Range"
 };
 
 httpparser::Request parseRequestStr(const std::string &request_str) {
