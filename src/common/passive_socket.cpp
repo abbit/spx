@@ -9,14 +9,22 @@
 #include "active_socket.h"
 #include "tcp_socket.h"
 
-// TODO: write errno to exceptions
-
 namespace spx {
 std::unique_ptr<PassiveSocket> PassiveSocket::create(uint16_t port) {
   return std::unique_ptr<PassiveSocket>(new PassiveSocket(port));
 }
 
 PassiveSocket::PassiveSocket(uint16_t port) : TcpSocket(), port_(port) {
+  int enable_socket_reuse = 1;
+  if (setsockopt(getFileDescriptor(), SOL_SOCKET, SO_REUSEADDR,
+                 &enable_socket_reuse, sizeof(enable_socket_reuse)) < 0) {
+    throw Exception("setsockopt(SO_REUSEADDR) failed");
+  }
+  if (setsockopt(getFileDescriptor(), SOL_SOCKET, SO_REUSEPORT,
+                 &enable_socket_reuse, sizeof(enable_socket_reuse)) < 0) {
+    throw Exception("setsockopt(SO_REUSEPORT) failed");
+  }
+
   struct addrinfo hints {
   }, *res;
   memset(&hints, 0, sizeof(hints));
@@ -47,7 +55,7 @@ std::unique_ptr<ActiveSocket> PassiveSocket::accept() {
     throw Exception("error on accepting connection");
   }
 
-  return ActiveSocket::create(conn_fd, ConnectionType::Enum::to_client);
+  return ActiveSocket::create(conn_fd);
 }
 
 uint16_t PassiveSocket::getPort() const { return port_; }
