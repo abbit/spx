@@ -39,6 +39,10 @@ size_t ActiveSocket::send(const std::string &data) const {
   return send(data_ptr, data_len);
 }
 
+size_t ActiveSocket::send(const std::vector<char> &data) const {
+  return send(data.data(), data.size());
+}
+
 size_t ActiveSocket::receive(void *buffer, size_t buffer_len) const {
   ssize_t res = recv(getFileDescriptor(), buffer, buffer_len, 0);
   if (res == -1) {

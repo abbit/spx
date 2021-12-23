@@ -1,18 +1,16 @@
 #include "server.h"
 
-#include <arpa/inet.h>
 #include <netdb.h>
-#include <netinet/in.h>
 #include <sys/socket.h>
 
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
-#include <cstdio>
-#include <deque>
 #include <iostream>
+#include <list>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 #include "common/exception.h"
@@ -20,12 +18,65 @@
 #include "common/passive_socket.h"
 
 namespace spx {
+
 namespace http = httpparser;
 
 namespace {
 const int TIMEOUT = 600000;  // in ms
 const int PENDING_CONNECTIONS_QUEUE_LEN = 5;
-const int MAX_REQUEST_SIZE = 16 * 1024;  // 16 kb
+const int MAX_CACHE_SIZE = 16 * 1024 * 1024;  // 16 mb
+const size_t MAX_CHUNK_SIZE = 1024;           // 1 kb
+
+// Utility functions
+
+std::unique_ptr<ActiveSocket> connectToHost(const std::string &hostname,
+                                            const std::string &port) {
+  // get addrinfo by hostname
+  addrinfo hints{};
+  memset(&hints, 0, sizeof(hints));
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_STREAM;
+
+  addrinfo *servinfo;
+  if (getaddrinfo(hostname.c_str(), port.c_str(), &hints, &servinfo) != 0) {
+    throw Exception("error on getaddrinfo()");
+  }
+
+  // connect to host
+  std::unique_ptr<ActiveSocket> res = nullptr;
+  for (addrinfo *p = servinfo; p != nullptr; p = p->ai_next) {
+    try {
+      std::unique_ptr<ActiveSocket> socket = ActiveSocket::create(p);
+      socket->connect(p->ai_addr, p->ai_addrlen);
+      res = std::move(socket);
+      break;
+    } catch (const Exception &e) {
+    }
+  }
+  freeaddrinfo(servinfo);
+
+  if (!res || !res->isValid()) {
+    std::stringstream ss;
+    ss << "Can't connect to host " << hostname << ":" << port;
+    throw Exception(ss.str());
+  }
+
+  return res;
+}
+
+void prepareForSendingRequest(Client &client) {
+  client.server_connection =
+      connectToHost(client.request.url.hostname(),
+                    std::to_string(client.request.url.httpPort()));
+  client.state = Client::State::sending_request;
+}
+
+std::vector<char> readResponseChunk(Client &client) {
+  char chunk[MAX_CHUNK_SIZE];
+  size_t message_size = client.server_connection->receive(chunk, sizeof(chunk));
+  return {chunk, chunk + message_size};
+}
+
 }  // namespace
 
 bool Server::is_running_ = false;
@@ -34,9 +85,11 @@ void Server::stop(int) { Server::is_running_ = false; }
 
 Server::Server(uint16_t port, rlim_t max_fds) : clients_(max_fds) {
   server_socket_ = PassiveSocket::create(port);
+  cache_ = Cache::create(MAX_CACHE_SIZE);
 
   signal(SIGTERM, Server::stop);
   signal(SIGINT, Server::stop);
+  signal(SIGPIPE, SIG_IGN);
 }
 
 Server::~Server() { std::cout << "Server destructor called" << std::endl; }
@@ -55,9 +108,6 @@ std::vector<pollfd> Server::poll() {
   std::vector<pollfd> pfds = getPollfds();
 
   int poll_result = ::poll(pfds.data(), pfds.size(), TIMEOUT);
-  std::cout << "======================\n"
-            << "clients=" << clients_.size() << ", polled=" << poll_result
-            << "\n======================" << std::endl;
 
   if (poll_result < 0) {
     throw Exception("error on poll()");
@@ -94,11 +144,13 @@ void Server::start() {
 }
 
 void Server::handleServerSocketEvents(const int &events_bitmask) {
-  if ((events_bitmask & (POLLERR | POLLNVAL)) > 0) {
+  if (events_bitmask & (POLLERR | POLLNVAL)) {
     throw Exception("Error on server socket");
-  } else if ((events_bitmask & POLLIN) > 0) {
+  }
+
+  if (events_bitmask & POLLIN) {
     try {
-      acceptConnection();
+      acceptClient();
     } catch (const Exception &e) {
       std::cerr << "Error on accepting connection to server: " << e.what()
                 << std::endl;
@@ -108,32 +160,48 @@ void Server::handleServerSocketEvents(const int &events_bitmask) {
 
 void Server::handleClientSocketEvents(Client &client, const int &revents) {
   try {
-    if ((revents & POLLERR) > 0) {
-      closeConnection(*client.client_connection);
+    if (revents & (POLLERR | POLLNVAL)) {
+      discardClient(client);
       return;
     }
 
     switch (client.state) {
-      case Client::State::waiting_for_request:
+      case Client::State::waiting_for_request: {
         readRequestFromClient(client);
         break;
-      case Client::State::sending_request:
+      }
+      case Client::State::waiting_for_response_for_another_client:
+        // not reachable, because client in this state does not set events flags
+        break;
+      case Client::State::sending_request: {
+        if (revents & POLLHUP) {
+          // server hangup, cant send request
+          discardClient(client);
+          return;
+        }
         sendRequestToServer(client);
         break;
-      case Client::State::transfering_response:
-        if (revents == POLLHUP) {
-          closeConnection(*client.client_connection);
-        } else if ((revents & POLLIN) > 0) {
+      }
+      case Client::State::waiting_response_status_code: {
+        readResponseStatusCodeFromServer(client);
+        break;
+      }
+      case Client::State::waiting_response:
+        if (revents & POLLIN) {
           readResponseFromServer(client);
-        } else if ((revents & POLLOUT) > 0) {
+        }
+      case Client::State::got_response: {
+        if (revents == POLLHUP) {
+          // client hangup, cant send response
+          discardClient(client);
+          return;
+        }
+
+        if (revents & POLLOUT) {
           sendResponseToClient(client);
-        } else {
-          std::stringstream ss;
-          ss << "Unexpected revent " << revents
-             << " with \"sending_response\" client state)";
-          throw Exception(ss.str());
         }
         break;
+      }
     }
   } catch (const Exception &e) {
     std::cerr << "Error while handling client socket events: " << e.what()
@@ -141,191 +209,266 @@ void Server::handleClientSocketEvents(Client &client, const int &revents) {
   }
 }
 
-void Server::acceptConnection() {
-  clients_.acceptConnection(server_socket_->accept());
-  std::cout << "Connection accepted" << std::endl;
-}
+void Server::acceptClient() { clients_.acceptClient(server_socket_->accept()); }
 
-void Server::closeConnection(const ActiveSocket &connection) {
-  clients_.closeConnection(connection);
-  std::cout << "Connection closed" << std::endl;
-}
+void Server::discardClient(Client &client) {
+  std::cout << "Discarding " << client << std::endl;
 
-std::unique_ptr<ActiveSocket> connectToHost(const std::string &hostname,
-                                            const std::string &port) {
-  // get addrinfo by hostname
-  addrinfo hints{};
-  memset(&hints, 0, sizeof(hints));
-  hints.ai_family = AF_INET;
-  hints.ai_socktype = SOCK_STREAM;
+  auto &request_cliest_list = request_clients_map[client.request_str];
+  removeFromRequestClients(client);
 
-  addrinfo *servinfo;
-  if (getaddrinfo(hostname.c_str(), port.c_str(), &hints, &servinfo) != 0) {
-    throw Exception("error on getaddrinfo()");
-  }
+  if (client.state == Client::State::waiting_response &&
+      hasClientsWithRequest(client.request_str)) {
+    std::cout << "has other client with this request" << std::endl;
+    const auto &reading_from_cache_client =
+        std::find_if(request_cliest_list.begin(), request_cliest_list.end(),
+                     [](const std::reference_wrapper<Client> &client) {
+                       return client.get().isReadingFromCache();
+                     });
 
-  // connect to host
-  std::unique_ptr<ActiveSocket> res = nullptr;
-  for (addrinfo *p = servinfo; p != nullptr; p = p->ai_next) {
-    try {
-      std::unique_ptr<ActiveSocket> socket =
-          ActiveSocket::create(p, ConnectionType::Enum::to_server);
-      socket->connect(p->ai_addr, p->ai_addrlen);
-
-      auto *in = reinterpret_cast<sockaddr_in *>(p->ai_addr);
-      std::cout << "Connected to " << hostname << "(" << inet_ntoa(in->sin_addr)
-                << ")"
-                << ", port " << ntohs(in->sin_port) << std::endl;
-
-      res = std::move(socket);
-      break;
-    } catch (const Exception &e) {
+    if (reading_from_cache_client != request_cliest_list.end()) {
+      std::cout << "has other client that reading from cache" << std::endl;
+      reading_from_cache_client->get().obtainServerConnection(client);
     }
   }
-  freeaddrinfo(servinfo);
 
-  if (!res || !res->isValid()) {
-    std::stringstream ss;
-    ss << "Can't connect to host " << hostname << ":" << port;
-    throw Exception(ss.str());
-  }
-
-  return res;
+  cache_->disuseEntry(client.request_str);
+  clients_.discardClient(client);
 }
 
-std::string readHttpRequest(const ActiveSocket &connection) {
-  char request_raw[MAX_REQUEST_SIZE];
-  char buffer[BUFSIZ];
-  size_t message_size;
-  size_t written = 0;
-  while ((message_size = connection.receive(buffer, sizeof(buffer))) > 0) {
-    if (written + message_size > sizeof(request_raw)) {
-      throw Exception("Too large request");
-    }
+void Server::writeResponseChunkToClientBuffer(Client &client,
+                                              const std::vector<char> &chunk) {
+  std::cout << client << "writing chunk to buffer" << std::endl;
+  client.chunks.push_back(chunk);
+}
 
-    strncpy(request_raw + written, buffer, message_size);
-    written += message_size;
-
-    if (strstr(request_raw, "\r\n\r\n") != nullptr) break;
+void Server::writeResponseChunkToCache(Client &client,
+                                       const std::vector<char> &chunk) {
+  std::cout << client << "writing chunk to cache" << std::endl;
+  try {
+    cache_->write(client.request_str, chunk.data(), chunk.size());
+  } catch (const AllInUseException &e) {
+    std::cout << client << e.what() << ", fallback to buffer" << std::endl;
+    fallbackToClientBuffer(client);
+    writeResponseChunkToClientBuffer(client, chunk);
   }
+}
 
-  return {request_raw, static_cast<std::string::size_type>(written)};
+void Server::fallbackToClientBuffer(Client &client) {
+  auto &entry = cache_->getEntry(client.request_str);
+  if (client.sent_bytes < entry.size()) {
+    client.chunks.emplace_back(entry.data() + client.sent_bytes,
+                               entry.data() + entry.size());
+  }
+  client.should_write_to_cache = false;
+  client.should_read_from_cache = false;
+  cache_->disuseEntry(client.request_str);
+}
+
+void Server::setClientToGetResponseFromCache(Client &client) {
+  client.state = Client::State::got_response;
+  cache_->useEntry(client.request_str);
+  client.should_read_from_cache = true;
 }
 
 void Server::readRequestFromClient(Client &client) {
-  std::cout << "Read request from client " << std::endl;
-
-  const ActiveSocket &client_conn = *client.client_connection;
+  std::cout << client << "Read request from client" << std::endl;
 
   try {
-    std::string received_request_str = readHttpRequest(client_conn);
+    client.getHttpRequest();
 
-    std::cout << "[" << client_conn << "] "
-              << "Request received:\n"
-              << received_request_str << std::endl;
+    // if response to request already in cache, then just use it
+    // otherwise send request to server
+    if (cache_->contains(client.request_str)) {
+      std::cout << "Have response in cache!" << std::endl;
+      setClientToGetResponseFromCache(client);
+    } else if (hasClientsWithRequest(client.request_str)) {
+      std::cout << "Has another client with this request, wait for his response"
+                << std::endl;
+      client.state = Client::State::waiting_for_response_for_another_client;
+    } else {
+      std::cout << "Response is not in cache" << std::endl;
+      prepareForSendingRequest(client);
+    }
 
-    client.request = HttpRequest(received_request_str);
-
-    client.server_connection =
-        connectToHost(client.request.url.hostname(),
-                      std::to_string(client.request.url.httpPort()));
-
-    client.state = Client::State::sending_request;
+    addToRequestClients(client);
   } catch (const Exception &e) {
     std::cerr << "Error while reading request from client: " << e.what()
               << std::endl;
-    closeConnection(client_conn);
+    discardClient(client);
   }
 }
 
-void Server::sendRequestToServer(Client &client) {
-  std::cout << "Send request to server" << std::endl;
+void Server::addToRequestClients(Client &client) {
+  if (request_clients_map.find(client.request_str) !=
+      request_clients_map.end()) {
+    request_clients_map[client.request_str].push_back(client);
+  } else {
+    request_clients_map[client.request_str] = {client};
+  }
+}
 
-  const ActiveSocket &client_conn = *client.client_connection;
+void Server::removeFromRequestClients(Client &client) {
+  auto &request_cliest_list = request_clients_map[client.request_str];
+
+  request_cliest_list.erase(
+      std::remove_if(
+          request_cliest_list.begin(), request_cliest_list.end(),
+          [&client](std::reference_wrapper<Client> &c) { return client == c; }),
+      request_cliest_list.end());
+}
+
+bool Server::hasClientsWithRequest(const std::string &request) {
+  auto clients_list = request_clients_map.find(request);
+  return clients_list != request_clients_map.end() &&
+         !clients_list->second.empty();
+}
+
+void Server::sendRequestToServer(Client &client) {
+  std::cout << client << "Send request to server" << std::endl;
 
   try {
     ActiveSocket &server_conn = *client.server_connection;
-    const HttpRequest &request = client.request;
 
-    server_conn.send(request.toString());
+    server_conn.send(client.request_str);
     server_conn.shutdownWrite();
 
-    client.state = Client::State::transfering_response;
-
-    std::cout << "[" << client_conn << "] "
-              << "Request sent:\n"
-              << request.toString() << std::endl;
+    client.state = Client::State::waiting_response_status_code;
   } catch (const Exception &e) {
     std::cerr << "Error while sending request to server: " << e.what()
               << std::endl;
-    closeConnection(client_conn);
+    discardClient(client);
+  }
+}
+
+void Server::prepareAllWaitingClientsForSending(const std::string &request) {
+  for (auto &c : request_clients_map[request]) {
+    if (c.get().state ==
+        Client::State::waiting_for_response_for_another_client) {
+      prepareForSendingRequest(c.get());
+    }
+  }
+}
+
+void Server::readResponseStatusCodeFromServer(Client &client) {
+  std::cout << client << "Read response status code from server" << std::endl;
+
+  try {
+    std::vector<char> chunk = readResponseChunk(client);
+
+    const size_t STATUS_CODE_OFFSET = 9;
+    const size_t STATUS_CODE_LEN = 3;
+    const size_t OK_STATUS_CODE = 200;
+
+    std::string status_code{chunk.data() + STATUS_CODE_OFFSET, STATUS_CODE_LEN};
+    std::cout << "Status code=" << status_code << std::endl;
+    bool is_ok_status_code = std::stoi(status_code) == OK_STATUS_CODE;
+
+    if (is_ok_status_code) {
+      client.should_write_to_cache = true;
+      client.should_read_from_cache = true;
+      cache_->useEntry(client.request_str);
+      writeResponseChunkToCache(client, chunk);
+      for (auto &c : request_clients_map[client.request_str]) {
+        if (client != c) {
+          setClientToGetResponseFromCache(c.get());
+        }
+      }
+    } else {
+      writeResponseChunkToClientBuffer(client, chunk);
+      prepareAllWaitingClientsForSending(client.request_str);
+    }
+    client.state = Client::State::waiting_response;
+  } catch (const Exception &e) {
+    std::cerr << "Error while reading response status code from server: "
+              << e.what() << std::endl;
+    prepareAllWaitingClientsForSending(client.request_str);
+    discardClient(client);
   }
 }
 
 void Server::readResponseFromServer(Client &client) {
-  if (client.is_done_reading_response) return;
-  std::cout << "Read response from server" << std::endl;
-
-  const ActiveSocket &client_conn = *client.client_connection;
+  std::cout << client << "Read response from server" << std::endl;
 
   try {
-    ActiveSocket &server_conn = *client.server_connection;
+    std::vector<char> chunk = readResponseChunk(client);
 
-    char buffer[BUFSIZ];
-    size_t buffer_size = sizeof(buffer);
-    size_t message_size = server_conn.receive(buffer, buffer_size);
-
-    if (message_size == 0) {
-      client.is_done_reading_response = true;
-      return;
+    if (client.should_write_to_cache) {
+      writeResponseChunkToCache(client, chunk);
+    } else {
+      writeResponseChunkToClientBuffer(client, chunk);
     }
-
-    std::deque<std::vector<char>> &client_buf = client.getBuffer();
-    client_buf.emplace_back(buffer, buffer + message_size);
-
-    std::cout << "[" << client_conn << "] "
-              << "Response read (size=" << message_size << "):\n"
-              << buffer << std::endl;
+  } catch (const ZeroLengthMessageException &e) {
+    std::cout << "Done reading response" << std::endl;
+    client.state = Client::State::got_response;
+    if (client.should_write_to_cache) {
+      cache_->getEntry(client.request_str).complete();
+    }
   } catch (const Exception &e) {
     std::cerr << "Error while reading response from server: " << e.what()
               << std::endl;
-    closeConnection(client_conn);
+    discardClient(client);
   }
 }
 
 void Server::sendResponseToClient(Client &client) {
-  std::cout << "Send response to client" << std::endl;
+  if (client.should_read_from_cache) {
+    sendCachedResponseToClient(client);
+  } else {
+    sendUncachedResponseToClient(client);
+  }
+}
 
-  const ActiveSocket &client_conn = *client.client_connection;
-
+void Server::sendUncachedResponseToClient(Client &client) {
   try {
-    std::deque<std::vector<char>> &buffer = client.getBuffer();
-    if (buffer.empty()) {
-      if (client.is_done_reading_response) {
+    if (client.chunks.empty()) {
+      if (client.state == Client::State::got_response) {
         std::cout << "DONE!!!" << std::endl;
-        closeConnection(client_conn);
-        return;
+        discardClient(client);
+      } else {
+        //        std::cout << "No new data" << std::endl;
       }
-
-      std::cout << "No data" << std::endl;
       return;
     }
 
-    std::vector<char> chunk = buffer.front();
-    size_t written_size = client_conn.send(chunk.data(), chunk.size());
-    buffer.pop_front();
+    std::cout << client << "Send response to client" << std::endl;
 
-    if (written_size != chunk.size()) {
-      throw Exception("partial write");
-    }
-
-    std::cout << "[" << client_conn << "] "
-              << "Response sent: \n"
-              << chunk.data() << std::endl;
+    client.sendToClientFromChunks();
   } catch (const Exception &e) {
     std::cerr << "Error while sending response to client: " << e.what()
               << std::endl;
-    closeConnection(client_conn);
+    discardClient(client);
   }
 }
+
+void Server::sendCachedResponseToClient(Client &client) {
+  try {
+    const auto &cache_entry = cache_->getEntry(client.request_str);
+    const size_t received_bytes = cache_entry.size();
+    const bool is_new_data_available = client.sent_bytes < received_bytes;
+    if (!is_new_data_available) {
+      if (cache_entry.isCompleted()) {
+        std::cout << "DONE!!!" << std::endl;
+        discardClient(client);
+      } else {
+        //        std::cout << "No new data" << std::endl;
+      }
+      return;
+    }
+
+    std::cout << client << "Send cached response to client" << std::endl;
+
+    size_t chunk_size =
+        std::min(received_bytes - client.sent_bytes, MAX_CHUNK_SIZE);
+    client.sendToClient(
+        cache_->read(client.request_str, client.sent_bytes, chunk_size));
+  } catch (const KeyNotFoundException &e) {
+    std::cout << "no cache yet" << std::endl;
+  } catch (const Exception &e) {
+    std::cerr << "Error while sending response to client: " << e.what()
+              << std::endl;
+    discardClient(client);
+  }
+}
+
 }  // namespace spx

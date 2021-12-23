@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "exception.h"
 #include "tcp_socket.h"
@@ -23,6 +24,7 @@ class ActiveSocket : public TcpSocket {
 
   size_t send(const void *data_ptr, size_t data_len) const;
   size_t send(const std::string &data) const;
+  size_t send(const std::vector<char> &data) const;
 
   size_t receive(void *buffer, size_t buffer_len) const;
 
