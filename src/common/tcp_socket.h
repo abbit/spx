@@ -31,6 +31,8 @@ class TcpSocket {
 
   int getFileDescriptor() const;
 
+  void close();
+
  protected:
   TcpSocket();
   explicit TcpSocket(const addrinfo *info);
