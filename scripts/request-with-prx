@@ -1,3 +1,0 @@
-#!/usr/bin/env bash
-
-curl --no-keepalive --proxy-header "Proxy-Connection:" -x 127.0.0.1:7331 http://ccfit.nsu.ru > ../build/with.txt

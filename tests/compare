@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+
+curl --no-keepalive http://ccfit.nsu.ru > without.txt
+curl --no-keepalive --proxy-header "Proxy-Connection:" -x 127.0.0.1:7331 http://ccfit.nsu.ru > with.txt
+
+out=$(diff with.txt without.txt)
+if [[ $out == "" ]]; then
+  echo "All fine, there is no difference"
+else
+  echo "THERE IS A DIFFERENCE"
+  echo $out
+fi

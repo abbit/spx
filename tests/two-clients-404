@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+
+url="http://www.ccfit.nsu.ru/nety"
+
+function do_req() {
+  curl --no-keepalive --proxy-header "Proxy-Connection:" -x 127.0.0.1:7331 $1 -o $2 &>$3 &
+}
+
+do_req $url 404_1.html first_404.log
+do_req $url 404_2.html second_404.log
