@@ -120,6 +120,7 @@ std::vector<pollfd> ClientsList::getPollfds() {
         res.push_back({client_fd, POLLOUT, 0});
         break;
       case Client::State::got_response:
+      case Client::State::getting_response_from_another_client:
         res.push_back({client_fd, POLLOUT, 0});
         break;
     }

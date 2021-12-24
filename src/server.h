@@ -60,7 +60,8 @@ class Server {
                                                const std::vector<char>& chunk);
   void writeResponseChunkToCache(Client& client,
                                  const std::vector<char>& chunk);
-  void fallbackToClientBuffer(Client& client);
+  void fallbackToClientBuffer(Client& original_client,
+                              const std::vector<char>& chunk);
 };
 
 }  // namespace spx

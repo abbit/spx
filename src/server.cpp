@@ -190,6 +190,7 @@ void Server::handleClientSocketEvents(Client &client, const int &revents) {
         if (revents & POLLIN) {
           readResponseFromServer(client);
         }
+      case Client::State::getting_response_from_another_client:
       case Client::State::got_response: {
         if (revents == POLLHUP) {
           // client hangup, cant send response
@@ -249,20 +250,28 @@ void Server::writeResponseChunkToCache(Client &client,
     cache_->write(client.request_str, chunk.data(), chunk.size());
   } catch (const AllInUseException &e) {
     std::cout << client << e.what() << ", fallback to buffer" << std::endl;
-    fallbackToClientBuffer(client);
-    writeResponseChunkToClientBuffer(client, chunk);
+    fallbackToClientBuffer(client, chunk);
   }
 }
 
-void Server::fallbackToClientBuffer(Client &client) {
-  auto &entry = cache_->getEntry(client.request_str);
-  if (client.sent_bytes < entry.size()) {
-    client.chunks.emplace_back(entry.data() + client.sent_bytes,
-                               entry.data() + entry.size());
+void Server::fallbackToClientBuffer(Client &original_client,
+                                    const std::vector<char> &chunk) {
+  for (auto &c : request_clients_map[original_client.request_str]) {
+    auto &client = c.get();
+    client.should_read_from_cache = false;
+    client.state = Client::State::getting_response_from_another_client;
+    auto &entry = cache_->getEntry(client.request_str);
+    if (client.sent_bytes < entry.size()) {
+      client.chunks.emplace_back(entry.data() + client.sent_bytes,
+                                 entry.data() + entry.size());
+    }
+    writeResponseChunkToClientBuffer(client, chunk);
+    cache_->disuseEntry(client.request_str);
   }
-  client.should_write_to_cache = false;
-  client.should_read_from_cache = false;
-  cache_->disuseEntry(client.request_str);
+
+  original_client.should_write_to_cache = false;
+  original_client.should_write_to_all = true;
+  original_client.state = Client::State::waiting_response;
 }
 
 void Server::setClientToGetResponseFromCache(Client &client) {
@@ -395,6 +404,10 @@ void Server::readResponseFromServer(Client &client) {
 
     if (client.should_write_to_cache) {
       writeResponseChunkToCache(client, chunk);
+    } else if (client.should_write_to_all) {
+      for (auto &c : request_clients_map[client.request_str]) {
+        writeResponseChunkToClientBuffer(c.get(), chunk);
+      }
     } else {
       writeResponseChunkToClientBuffer(client, chunk);
     }
@@ -403,6 +416,10 @@ void Server::readResponseFromServer(Client &client) {
     client.state = Client::State::got_response;
     if (client.should_write_to_cache) {
       cache_->getEntry(client.request_str).complete();
+    } else if (client.should_write_to_all) {
+      for (auto &c : request_clients_map[client.request_str]) {
+        c.get().state = Client::State::got_response;
+      }
     }
   } catch (const Exception &e) {
     std::cerr << "Error while reading response from server: " << e.what()

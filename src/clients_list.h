@@ -22,6 +22,7 @@ class Client {
     waiting_response_status_code,             // client: 0, server: POLLIN
     waiting_response,                         // client: POLLOUT, server: POLLIN
     got_response,                             // client: POLLOUT, server: 0
+    getting_response_from_another_client,
   };
 
   std::string request_str;
@@ -33,6 +34,7 @@ class Client {
   std::deque<std::vector<char>> chunks;
   bool should_write_to_cache{false};
   bool should_read_from_cache{false};
+  bool should_write_to_all{false};
 
   static std::unique_ptr<Client> create(
       std::unique_ptr<ActiveSocket> client_conn);
@@ -45,7 +47,7 @@ class Client {
   void getHttpRequest();
 
   bool isReadingFromCache() const;
-  void obtainServerConnection(Client &other);
+  void obtainServerConnection(Client& other);
 
   size_t sendToClient(const std::vector<char>& chunk);
   void sendToClientFromChunks();
