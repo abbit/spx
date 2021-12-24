@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-url="http://www.ccfit.nsu.ru/fit/courses/physics/meh_elem_sto.pdf"
+url="http://www.ccfit.nsu.ru/fit/courses/cogpsy/CogPsy2009.7z"
 
 function do_req() {
   curl --no-keepalive --proxy-header "Proxy-Connection:" -x 127.0.0.1:7331 $1 -o $2 &>$3 &
