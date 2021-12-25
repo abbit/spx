@@ -8,5 +8,5 @@ function do_req() {
 
 do_req $url drop.pdf solo_drop.log
 pid=$!
-sleep 0.2
+sleep 0.1
 kill $pid

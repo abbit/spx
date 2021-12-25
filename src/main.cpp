@@ -12,7 +12,6 @@ const int PORT_MAX = 65535;
 class Arguments {
  public:
   uint16_t port{};
-  rlim_t max_fds{1024};
 
   Arguments() = default;
 
@@ -30,13 +29,6 @@ class Arguments {
       throw std::invalid_argument(ss.str());
     }
     this->port = static_cast<uint16_t>(port_unchecked);
-
-    struct rlimit fd_limits {};
-    if (getrlimit(RLIMIT_NOFILE, &fd_limits) == 0) {
-      max_fds = fd_limits.rlim_cur;
-    } else {
-      std::cerr << "can't get file descriptors limit" << std::endl;
-    }
   }
 };
 }  // namespace
@@ -50,11 +42,8 @@ int main(int argc, char* argv[]) {
     return EXIT_FAILURE;
   }
 
-  std::cout << "Max file descriptors: " << args.max_fds << std::endl;
-
   try {
-    spx::Server Server(args.port, args.max_fds);
-    Server.start();
+    spx::Server(args.port).start();
   } catch (const spx::Exception& e) {
     std::cerr << "My ERROR: " << e.what() << std::endl;
     return EXIT_FAILURE;

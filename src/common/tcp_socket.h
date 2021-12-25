@@ -18,11 +18,9 @@ const int INVALID_SOCKET_FD = -1;
 class TcpSocket {
  public:
   TcpSocket(const TcpSocket &) = delete;
-
   TcpSocket &operator=(const TcpSocket &) = delete;
 
   bool operator==(const TcpSocket &other) const;
-
   bool operator==(const int &other) const;
 
   friend std::ostream &operator<<(std::ostream &os, const TcpSocket &that);
