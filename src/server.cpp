@@ -24,7 +24,7 @@ namespace http = httpparser;
 namespace {
 const int PENDING_CONNECTIONS_QUEUE_LEN = 5;
 const int MAX_CACHE_SIZE = 64 * 1024 * 1024;  // 16 mb
-const size_t MAX_CHUNK_SIZE = 64 * 1024;      // 64 kb
+const size_t MAX_CHUNK_SIZE = 16 * 1024;      // 16 kb
 
 // --- Utility functions ---
 
@@ -66,13 +66,40 @@ std::unique_ptr<ActiveSocket> connectToHost(const std::string &hostname,
   return res;
 }
 
+void prepareForSendingRequest(Client &client) {
+  client.server_connection =
+      connectToHost(client.request.url.hostname(),
+                    std::to_string(client.request.url.httpPort()));
+  client.state = Client::State::sending_request;
+}
+
+void prepareAllWaitingClientsForSending(
+    std::list<std::reference_wrapper<Client>> &list) {
+  for (auto &c : list) {
+    if (c.get().state ==
+        Client::State::waiting_for_response_status_code_for_another_client) {
+      prepareForSendingRequest(c.get());
+    }
+  }
+}
+
+bool hasClientWithSendingRequest(
+    const std::list<std::reference_wrapper<Client>> &list) {
+  auto is_sending_request = [](std::reference_wrapper<Client> c) {
+    return c.get().state == Client::State::sending_request;
+  };
+
+  return std::find_if(list.begin(), list.end(), is_sending_request) !=
+         list.end();
+}
+
 }  // namespace
 
 bool Server::is_running_ = false;
 auto Server::cache_ = Cache::create(MAX_CACHE_SIZE);
-// std::unordered_map<std::string, RequestClientsMapEntry>
-//     Server::request_clients_map{};
-// Mutex Server::request_clients_map_mutex_;
+std::unordered_map<std::string, std::unique_ptr<RequestClientsMapEntry>>
+    Server::request_clients_map;
+Mutex Server::request_clients_map_mutex_;
 
 void Server::stop(int) { Server::is_running_ = false; }
 
@@ -115,40 +142,24 @@ void Server::acceptClient() {
   }
 }
 
-// bool Server::hasClientsWithRequest(const std::string &request) {
-//   auto clients_list = request_clients_map.find(request);
-//   bool res = false;
-//   if (clients_list != request_clients_map.end()) {
-//     res = !clients_list->second.list.empty();
-//   }
-//
-//   return res;
-// }
+void Server::createRequestClientsMapEntryIfDoesntExist(
+    const std::string &request) {
+  request_clients_map_mutex_.lock();
+  if (request_clients_map.find(request) == request_clients_map.end()) {
+    request_clients_map[request] = std::make_unique<RequestClientsMapEntry>();
+  }
+  request_clients_map_mutex_.unlock();
+}
 
-// void Server::addToRequestClients(Client &client) {
-//   auto &entry = getRequestClientsMapEntry(client.request_str);
-//   //  entry.mutex.lock();
-//   entry.list.emplace_back(client);
-//   //  entry.mutex.unlock();
-// }
-
-// void Server::removeFromRequestClients(Client &client) {
-//   auto &entry = getRequestClientsMapEntry(client.request_str);
-//   entry.mutex->lock();
-//   entry.list.erase(std::remove_if(entry.list.begin(), entry.list.end(),
-//                                   [&client](std::reference_wrapper<Client>
-//                                   &c) {
-//                                     return client == c;
-//                                   }),
-//                    entry.list.end());
-//   entry.mutex->unlock();
-// }
-
-void Server::prepareForSendingRequest(Client &client) {
-  client.server_connection =
-      connectToHost(client.request.url.hostname(),
-                    std::to_string(client.request.url.httpPort()));
-  client.state = Client::State::sending_request;
+void Server::removeFromRequestClients(Client &client) {
+  auto &entry = request_clients_map.at(client.request_str);
+  entry->mutex.lock();
+  entry->list.erase(
+      std::remove_if(
+          entry->list.begin(), entry->list.end(),
+          [&client](std::reference_wrapper<Client> &c) { return client == c; }),
+      entry->list.end());
+  entry->mutex.unlock();
 }
 
 std::vector<char> Server::readResponseChunk(Client &client) {
@@ -180,7 +191,10 @@ void Server::discardClient(Client *client) {
   //
   //  removeFromRequestClients(*client);
 
-  cache_->disuseEntry(client->request_str);
+  if (client->should_use_cache) {
+    cache_->disuseEntry(client->request_str);
+  }
+
   delete client;
 }
 
@@ -206,35 +220,39 @@ void Server::writeResponseChunkToCache(Client &client,
   }
 }
 
-void Server::setClientToGetResponseFromCache(Client &client) {
-  client.state = Client::State::get_from_cache;
-  cache_->useEntry(client.request_str);
-  client.should_use_cache = true;
-}
-
 void Server::readRequestFromClient(Client &client) {
   std::cout << client << "Read request from client" << std::endl;
 
   client.getHttpRequest();
   std::cout << client.request_str << std::endl;
-  // if response to request already in cache, then just use it
-  // otherwise send request to server
-  //  auto &entry = getRequestClientsMapEntry(client.request_str);
-  //  entry.mutex->lock();
-  if (cache_->contains(client.request_str)) {
-    std::cout << "Have response in cache!" << std::endl;
-    setClientToGetResponseFromCache(client);
-    //  } else if (hasClientsWithRequest(client.request_str)) {
-    //    std::cout << "Has another client with this request, wait for his
-    //    response "
-    //              << std::endl;
-    //    client.state = Client::State::waiting_for_response_for_another_client;
+
+  createRequestClientsMapEntryIfDoesntExist(client.request_str);
+  auto &entry = request_clients_map.at(client.request_str);
+  entry->mutex.lock();
+
+  entry->list.emplace_back(client);
+
+  if (hasClientWithSendingRequest(entry->list)) {
+    std::cout << client
+              << "Has another client with this request, wait for his response"
+              << std::endl;
+    client.state =
+        Client::State::waiting_for_response_status_code_for_another_client;
+    return;
   } else {
-    std::cout << "Response is not in cache" << std::endl;
+    std::cout << client << "NONONO" << std::endl;
+  }
+
+  if (cache_->useEntryIfExists(client.request_str)) {
+    std::cout << client << "Have response in cache!" << std::endl;
+    client.state = Client::State::get_from_cache;
+    client.should_use_cache = true;
+  } else {
+    std::cout << client << "Response is not in cache" << std::endl;
     prepareForSendingRequest(client);
   }
-  //  addToRequestClients(client);
-  //  entry.mutex->unlock();
+
+  entry->mutex.unlock();
 }
 
 void Server::sendRequestToServer(Client &client) {
@@ -245,20 +263,11 @@ void Server::sendRequestToServer(Client &client) {
   server_conn.shutdownWrite();
 }
 
-// void Server::prepareAllWaitingClientsForSending(const std::string &request) {
-//   auto &entry = getRequestClientsMapEntry(request);
-//   entry.mutex->lock();
-//   for (auto &c : entry.list) {
-//     if (c.get().state ==
-//         Client::State::waiting_for_response_for_another_client) {
-//       prepareForSendingRequest(c.get());
-//     }
-//   }
-//   entry.mutex->unlock();
-// }
-
 void Server::readResponseStatusCodeFromServer(Client &client) {
   std::cout << client << "Read response status code from server" << std::endl;
+
+  auto &entry = request_clients_map.at(client.request_str);
+  entry->mutex.lock();
 
   try {
     std::vector<char> chunk = readResponseChunk(client);
@@ -275,28 +284,28 @@ void Server::readResponseStatusCodeFromServer(Client &client) {
       client.should_use_cache = true;
       cache_->useEntry(client.request_str);
       writeResponseChunkToCache(client, chunk);
-      //          auto &entry = getRequestClientsMapEntry(client.request_str);
-      //          entry.mutex->lock();
-      //          // TODO
-      //          for (auto &c : entry.list) {
-      //            if (client != c) {
-      //              setClientToGetResponseFromCache(c.get());
-      //            }
-      //          }
-      //          entry.mutex->unlock();
+      for (auto &c : entry->list) {
+        if (client != c) {
+          client.state = Client::State::get_from_cache;
+          client.should_use_cache = true;
+        }
+      }
     } else {
-      //          prepareAllWaitingClientsForSending(client.request_str);
+      prepareAllWaitingClientsForSending(entry->list);
     }
 
-    //    entry.cond_var->notifyAll();
+    client.state = Client::State::transferring_response;
+    entry->cond_var.notifyAll();
 
-    client.sendToClient(chunk);
+    client.sendChunkToClient(chunk);
   } catch (const Exception &e) {
-    //    prepareAllWaitingClientsForSending(client.request_str);
+    prepareAllWaitingClientsForSending(entry->list);
   }
+
+  entry->mutex.unlock();
 }
 
-void Server::transferResponse(Client &client) {
+void Server::transferResponseChunk(Client &client) {
   std::cout << client << "Transfer response chunk" << std::endl;
 
   try {
@@ -306,7 +315,7 @@ void Server::transferResponse(Client &client) {
       writeResponseChunkToCache(client, chunk);
     }
 
-    client.sendToClient(chunk);
+    client.sendChunkToClient(chunk);
   } catch (const ZeroLengthMessageException &e) {
     std::cout << "Done transferring response" << std::endl;
     if (client.should_use_cache) {
@@ -316,31 +325,20 @@ void Server::transferResponse(Client &client) {
   }
 }
 
-void Server::sendCachedResponseToClient(Client &client) {
-  std::cout << client << "Send cached response" << std::endl;
+void Server::sendCachedResponseChunkToClient(Client &client) {
+  std::cout << client << "Send cached response chunk" << std::endl;
 
   if (cache_->isEntryCompleted(client.request_str)) {
-    client.sendToClient(cache_->readAll(client.request_str));
     client.done = true;
-  } else {
-    throw Exception("cache isn't complete");
-
-    ////     TODO: change to notify system
-    //    const size_t received_bytes = cache_entry.size();
-    //    const bool is_new_data_available = client.sent_bytes < received_bytes;
-    //    if (!is_new_data_available) {
-    //      if (cache_entry.isCompleted()) {
-    //        std::cout << "DONE!!!" << std::endl;
-    //      } else {
-    //        //        std::cout << "No new data" << std::endl;
-    //      }
-    //      return;
-    //    }
-    //    size_t chunk_size =
-    //        std::min(received_bytes - client.sent_bytes, MAX_CHUNK_SIZE);
-    //    client.sendToClient(
-    //        cache_->read(client.request_str, client.sent_bytes, chunk_size));
   }
+
+  const size_t received_bytes = cache_->getEntrySize(client.request_str);
+  size_t chunk_size = received_bytes - client.sent_bytes;
+  std::cout << client << "BEFORE: sent_bytes=" << client.sent_bytes
+            << std::endl;
+  client.sendChunkToClient(
+      cache_->read(client.request_str, client.sent_bytes, chunk_size));
+  std::cout << client << "AFTER: sent_bytes=" << client.sent_bytes << std::endl;
 }
 
 void *Server::handleClient(void *arg) {
@@ -350,28 +348,33 @@ void *Server::handleClient(void *arg) {
     std::cout << "Handling " << *client << std::endl;
 
     while (!client->done) {
-      std::cout << "checking state" << std::endl;
       switch (client->state) {
         case Client::State::initial: {
           readRequestFromClient(*client);
           break;
         }
-          //      case Client::State::waiting_for_response_for_another_client: {
-          //        auto &entry =
-          //        getRequestClientsMapEntry(client->request_str);
-          //        entry.cond_var->wait();
-          //        break;
-          //      }
+        case Client::State::
+            waiting_for_response_status_code_for_another_client: {
+          auto &entry = request_clients_map.at(client->request_str);
+          // TODO: check for some predicate?
+          entry->cond_var.wait(entry->mutex);
+          entry->mutex.unlock();
+          client->state = Client::State::get_from_cache;
+          break;
+        }
         case Client::State::sending_request: {
           sendRequestToServer(*client);
           readResponseStatusCodeFromServer(*client);
-          while (!client->done) {
-            transferResponse(*client);
-          }
+          break;
+        }
+        case Client::State::transferring_response: {
+          transferResponseChunk(*client);
           break;
         }
         case Client::State::get_from_cache: {
-          sendCachedResponseToClient(*client);
+          std::cout << *client << "wait for cache update" << std::endl;
+          cache_->waitForEntryUpdate(client->request_str);
+          sendCachedResponseChunkToClient(*client);
           break;
         }
         default:
@@ -384,17 +387,5 @@ void *Server::handleClient(void *arg) {
   discardClient(client);
   return nullptr;
 }
-
-// RequestClientsMapEntry &Server::getRequestClientsMapEntry(
-//     const std::string &request) {
-//   request_clients_map_mutex_.lock();
-//   if (request_clients_map.find(request) == request_clients_map.end()) {
-//     request_clients_map[request] = {
-//         {}, std::make_unique<Mutex>(), std::make_unique<CondVar>()};
-//   }
-//   RequestClientsMapEntry &res = request_clients_map.at(request);
-//   request_clients_map_mutex_.unlock();
-//   return res;
-// }
 
 }  // namespace spx

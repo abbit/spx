@@ -9,7 +9,7 @@
 
 #include "cond_var.h"
 #include "exception.h"
-//#include "mutex.h"
+#include "mutex.h"
 
 namespace spx {
 
@@ -30,23 +30,27 @@ class Cache {
   void write(const std::string &key, const char *buf, size_t buf_len);
 
   std::vector<char> read(const std::string &key, size_t offset, size_t len);
-  std::vector<char> readAll(const std::string &key);
 
   bool contains(const std::string &key);
 
   void useEntry(const std::string &key);
+  bool useEntryIfExists(const std::string &key);
   void disuseEntry(const std::string &key);
 
   bool isEntryCompleted(const std::string &key);
   void completeEntry(const std::string &key);
+  size_t getEntrySize(const std::string &key);
 
-//  Mutex cache_mutex_;
+  void waitForEntryUpdate(const std::string &key);
+
+  Mutex cache_mutex_;
 
  private:
   struct Entry {
     std::vector<char> buffer;
     bool completed{false};
-//    Mutex mutex;
+    Mutex mutex;
+    CondVar cond_var;
     int in_use{1};
 
     size_t size() const { return buffer.size(); }
@@ -72,7 +76,6 @@ class Cache {
   Entry &getEntry(const std::string &key);
 
   void removeLeastRecentlyUsed();
-  void makeMostRecentlyUsed(const std::string &key);
 
   void drop(const std::string &key);
 

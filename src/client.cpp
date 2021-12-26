@@ -48,13 +48,14 @@ std::ostream& operator<<(std::ostream& os, const Client& that) {
   return os;
 }
 
-void Client::sendToClient(const std::vector<char>& chunk) {
+void Client::sendChunkToClient(const std::vector<char>& chunk) {
   std::cout << *this << "Send chunk to client" << std::endl;
   size_t written_size = client_connection->send(chunk);
   sent_bytes += written_size;
   if (written_size != chunk.size()) {
     std::cout << "partial write" << std::endl;
-    sendToClient({chunk.data() + written_size, chunk.data() + chunk.size()});
+    sendChunkToClient(
+        {chunk.data() + written_size, chunk.data() + chunk.size()});
   }
 }
 

@@ -13,11 +13,11 @@
 
 namespace spx {
 
-// struct RequestClientsMapEntry {
-//   std::list<std::reference_wrapper<Client>> list;
-//   std::unique_ptr<Mutex> mutex;
-//   std::unique_ptr<CondVar> cond_var;
-// };
+struct RequestClientsMapEntry {
+  std::list<std::reference_wrapper<Client>> list;
+  Mutex mutex;
+  CondVar cond_var;
+};
 
 class Server {
  public:
@@ -32,9 +32,10 @@ class Server {
  private:
   std::unique_ptr<PassiveSocket> server_socket_;
   static std::unique_ptr<Cache> cache_;
-  //  static std::unordered_map<std::string, RequestClientsMapEntry>
-  //      request_clients_map;
-  //    static Mutex request_clients_map_mutex_;
+  static std::unordered_map<std::string,
+                            std::unique_ptr<RequestClientsMapEntry>>
+      request_clients_map;
+  static Mutex request_clients_map_mutex_;
   static bool is_running_;
 
   void acceptClient();
@@ -43,27 +44,21 @@ class Server {
 
   static void readRequestFromClient(Client &client);
   static void readResponseStatusCodeFromServer(Client &client);
-  static void prepareForSendingRequest(Client &client);
   static std::vector<char> readResponseChunk(Client &client);
   static void sendRequestToServer(Client &client);
-  static void transferResponse(Client &client);
+  static void transferResponseChunk(Client &client);
 
   //  static void sendUncachedResponseToClient(Client &client);
 
-  //  static bool hasClientsWithRequest(const std::string &request);
-  //  static void addToRequestClients(Client &client);
-  //  static void removeFromRequestClients(Client &client);
-  //  static void prepareAllWaitingClientsForSending(const std::string
-  //  &request);
+  static void createRequestClientsMapEntryIfDoesntExist(
+      const std::string &request);
+  static void removeFromRequestClients(Client &client);
+
   //  static void fallbackToClientBuffer(Client &client);
 
   static void writeResponseChunkToCache(Client &client,
                                         const std::vector<char> &chunk);
-  static void setClientToGetResponseFromCache(Client &client);
-  static void sendCachedResponseToClient(Client &client);
-
-  //  static RequestClientsMapEntry &getRequestClientsMapEntry(
-  //      const std::string &request);
+  static void sendCachedResponseChunkToClient(Client &client);
 };
 
 }  // namespace spx

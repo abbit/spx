@@ -15,39 +15,24 @@ Cache::Cache(size_t max_bytes) : max_size_(max_bytes), current_size_(0) {}
 void Cache::write(const std::string &key, const char *buf, size_t buf_len) {
   freeSpace(buf_len);
   current_size_ += buf_len;
-  makeMostRecentlyUsed(key);
-  auto &entry = list_.back().second;
-  entry->append(buf, buf_len);
-  std::cout << "appended" << std::endl;
+  auto &entry = getEntry(key);
+  entry.append(buf, buf_len);
+  entry.mutex.unlock();
+  entry.cond_var.notifyAll();
 
   std::cout << "Write cache entry data(len=" << buf_len << "), key:\n"
             << key << std::endl;
-  std::cout << "Space used: " << current_size_ << std::endl;
 }
 
 std::vector<char> Cache::read(const std::string &key, size_t offset,
                               size_t len) {
-  makeMostRecentlyUsed(key);
-  auto &entry = list_.back().second;
-
-  std::vector<char> res{entry->data() + offset, entry->data() + offset + len};
-
-  std::cout << "Read cache entry data(size=" << entry->size()
-            << ", offset=" << offset << ", len=" << len << "), key:\n"
-            << key << std::endl;
-
-  return res;
-}
-
-std::vector<char> Cache::readAll(const std::string &key) {
   auto &entry = getEntry(key);
+  std::vector<char> res{entry.data() + offset, entry.data() + offset + len};
 
-  return read(key, 0, entry.size());
-}
-
-Cache::Entry &Cache::getEntry(const std::string &key) {
-  makeMostRecentlyUsed(key);
-  Cache::Entry &res = *hash_table_.at(key)->second;
+  std::cout << "Read cache entry data(entry size=" << entry.size()
+            << ", read offset=" << offset << ", read len=" << len << "), key:\n"
+            << key << std::endl;
+  entry.mutex.unlock();
 
   return res;
 }
@@ -55,6 +40,7 @@ Cache::Entry &Cache::getEntry(const std::string &key) {
 void Cache::removeLeastRecentlyUsed() {
   std::cout << "Remove least recently used" << std::endl;
   // find first unused from least used to recently used
+  cache_mutex_.lock();
   auto to_be_removed = list_.end();
 
   for (auto it = list_.begin(); it != list_.end(); ++it) {
@@ -66,18 +52,25 @@ void Cache::removeLeastRecentlyUsed() {
 
   if (to_be_removed != list_.end()) {
     drop(to_be_removed->first);
+    cache_mutex_.unlock();
   } else {
+    cache_mutex_.unlock();
     throw AllInUseException();
   }
 }
 
-void Cache::makeMostRecentlyUsed(const std::string &key) {
+Cache::Entry &Cache::getEntry(const std::string &key) {
+  cache_mutex_.lock();
   try {
     list_.splice(list_.end(), list_, hash_table_.at(key));
     hash_table_[key] = std::prev(list_.end());
   } catch (const std::out_of_range &e) {
     throw KeyNotFoundException();
   }
+  auto &entry = *list_.back().second;
+  entry.mutex.lock();
+  cache_mutex_.unlock();
+  return entry;
 }
 
 bool Cache::contains(const std::string &key) {
@@ -105,12 +98,28 @@ void Cache::freeSpace(size_t needed_space) {
 }
 void Cache::useEntry(const std::string &key) {
   if (contains(key)) {
-    getEntry(key).incrementUse();
+    auto &entry = getEntry(key);
+    entry.incrementUse();
+    entry.mutex.unlock();
   } else {
+    cache_mutex_.lock();
     list_.emplace_back(key, std::make_unique<Entry>());
     hash_table_[key] = std::prev(list_.end());
     std::cout << "first use of entry, key:\n" << key << std::endl;
+    cache_mutex_.unlock();
   }
+}
+
+bool Cache::useEntryIfExists(const std::string &key) {
+  bool used = false;
+  if (contains(key)) {
+    auto &entry = getEntry(key);
+    entry.incrementUse();
+    entry.mutex.unlock();
+    used = true;
+  }
+
+  return used;
 }
 
 void Cache::disuseEntry(const std::string &key) {
@@ -119,18 +128,42 @@ void Cache::disuseEntry(const std::string &key) {
   auto &entry = getEntry(key);
   entry.decrementUse();
   std::cout << "cache entry disused, current in_use=" << entry.in_use
-            << ",key:\n"
+            << ",completed=" << entry.completed << ",key:\n"
             << key << std::endl;
   if (!entry.in_use && !entry.completed) {
+    cache_mutex_.lock();
     drop(key);
+    cache_mutex_.unlock();
   }
+
+  entry.mutex.unlock();
 }
 bool Cache::isEntryCompleted(const std::string &key) {
-  return getEntry(key).completed;
+  auto &entry = getEntry(key);
+  bool completed = entry.completed;
+  entry.mutex.unlock();
+  return completed;
 }
 
 void Cache::completeEntry(const std::string &key) {
-  getEntry(key).completed = true;
+  auto &entry = getEntry(key);
+  entry.completed = true;
+  entry.mutex.unlock();
+  entry.cond_var.notifyAll();
+}
+
+void Cache::waitForEntryUpdate(const std::string &key) {
+  auto &entry = getEntry(key);
+  if (!entry.completed) {
+    entry.cond_var.wait(entry.mutex);
+  }
+  entry.mutex.unlock();
+}
+size_t Cache::getEntrySize(const std::string &key) {
+  auto &entry = getEntry(key);
+  size_t size = entry.size();
+  entry.mutex.unlock();
+  return size;
 }
 
 }  // namespace spx

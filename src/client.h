@@ -18,8 +18,9 @@ class Client {
   enum class State : char {
     initial,
     get_from_cache,
-    //    waiting_for_response_for_another_client,
+    waiting_for_response_status_code_for_another_client,
     sending_request,
+    transferring_response,
     waiting_response,
     got_response,
   };
@@ -41,7 +42,7 @@ class Client {
   friend std::ostream& operator<<(std::ostream& os, const Client& that);
 
   void getHttpRequest();
-  void sendToClient(const std::vector<char>& chunk);
+  void sendChunkToClient(const std::vector<char>& chunk);
 
   //  bool isReadingFromCache() const;
   //  void obtainServerConnection(Client& other);
