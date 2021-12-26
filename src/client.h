@@ -21,8 +21,6 @@ class Client {
     waiting_for_response_status_code_for_another_client,
     sending_request,
     transferring_response,
-    waiting_response,
-    got_response,
   };
 
   std::string request_str;
@@ -44,8 +42,8 @@ class Client {
   void getHttpRequest();
   void sendChunkToClient(const std::vector<char>& chunk);
 
-  //  bool isReadingFromCache() const;
-  //  void obtainServerConnection(Client& other);
+  bool isReadingFromCache() const;
+  void obtainServerConnection(Client& other);
 
  private:
   Client();

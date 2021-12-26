@@ -65,15 +65,14 @@ void Client::getHttpRequest() {
   request_str = request.toString();
 }
 
-// bool Client::isReadingFromCache() const {
-//   return state == Client::State::got_response && should_use_cache &&
-//          server_connection == nullptr;
-// }
+bool Client::isReadingFromCache() const {
+  return state == Client::State::get_from_cache && should_use_cache &&
+         server_connection == nullptr;
+}
 
-// void Client::obtainServerConnection(Client& other) {
-//   server_connection = std::move(other.server_connection);
-//   state = Client::State::waiting_response;
-//   should_use_cache = true;
-// }
+void Client::obtainServerConnection(Client& other) {
+  server_connection = std::move(other.server_connection);
+  state = Client::State::transferring_response;
+}
 
 }  // namespace spx

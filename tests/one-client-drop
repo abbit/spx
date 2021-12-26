@@ -6,7 +6,7 @@ function do_req() {
   curl --no-keepalive --proxy-header "Proxy-Connection:" -x 127.0.0.1:7331 $1 -o $2 &>$3 &
 }
 
-do_req $url drop.pdf solo_drop.log
+do_req $url drop.7z solo_drop.log
 pid=$!
-sleep 0.01
+sleep 2
 kill $pid

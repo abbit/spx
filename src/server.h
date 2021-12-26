@@ -48,8 +48,6 @@ class Server {
   static void sendRequestToServer(Client &client);
   static void transferResponseChunk(Client &client);
 
-  //  static void sendUncachedResponseToClient(Client &client);
-
   static void createRequestClientsMapEntryIfDoesntExist(
       const std::string &request);
   static void removeFromRequestClients(Client &client);

@@ -15,6 +15,7 @@
 
 #include "common/exception.h"
 #include "common/http_request.h"
+#include "common/lock.h"
 #include "common/passive_socket.h"
 
 namespace spx {
@@ -144,22 +145,20 @@ void Server::acceptClient() {
 
 void Server::createRequestClientsMapEntryIfDoesntExist(
     const std::string &request) {
-  request_clients_map_mutex_.lock();
+  auto map_lock = Lock(request_clients_map_mutex_);
+
   if (request_clients_map.find(request) == request_clients_map.end()) {
     request_clients_map[request] = std::make_unique<RequestClientsMapEntry>();
   }
-  request_clients_map_mutex_.unlock();
 }
 
 void Server::removeFromRequestClients(Client &client) {
   auto &entry = request_clients_map.at(client.request_str);
-  entry->mutex.lock();
   entry->list.erase(
       std::remove_if(
           entry->list.begin(), entry->list.end(),
           [&client](std::reference_wrapper<Client> &c) { return client == c; }),
       entry->list.end());
-  entry->mutex.unlock();
 }
 
 std::vector<char> Server::readResponseChunk(Client &client) {
@@ -171,25 +170,29 @@ std::vector<char> Server::readResponseChunk(Client &client) {
 void Server::discardClient(Client *client) {
   std::cout << "Discarding " << *client << std::endl;
 
-  //  auto &entry = getRequestClientsMapEntry(client->request_str);
-  //  entry.mutex->lock();
-  //  if (client->state == Client::State::waiting_response &&
-  //      hasClientsWithRequest(client->request_str)) {
-  //    std::cout << "has other client with this request" << std::endl;
-  //    const auto &reading_from_cache_client =
-  //        std::find_if(entry.list.begin(), entry.list.end(),
-  //                     [](const std::reference_wrapper<Client> &client) {
-  //                       return client.get().isReadingFromCache();
-  //                     });
-  //
-  //    if (reading_from_cache_client != entry.list.end()) {
-  //      std::cout << "has other client that reading from cache" << std::endl;
-  //      reading_from_cache_client->get().obtainServerConnection(*client);
-  //    }
-  //  }
-  //  entry.mutex->unlock();
-  //
-  //  removeFromRequestClients(*client);
+  auto map_lock = Lock(request_clients_map_mutex_);
+
+  auto &entry = request_clients_map.at(client->request_str);
+  {
+    auto entry_lock = Lock(entry->mutex);
+
+    if (client->state == Client::State::transferring_response &&
+        entry->list.size() > 1) {
+      std::cout << "has other client with this request" << std::endl;
+      const auto &reading_from_cache_client =
+          std::find_if(entry->list.begin(), entry->list.end(),
+                       [](const std::reference_wrapper<Client> &client) {
+                         return client.get().isReadingFromCache();
+                       });
+
+      if (reading_from_cache_client != entry->list.end()) {
+        std::cout << "has other client that reading from cache" << std::endl;
+        reading_from_cache_client->get().obtainServerConnection(*client);
+      }
+    }
+
+    removeFromRequestClients(*client);
+  }
 
   if (client->should_use_cache) {
     cache_->disuseEntry(client->request_str);
@@ -228,7 +231,7 @@ void Server::readRequestFromClient(Client &client) {
 
   createRequestClientsMapEntryIfDoesntExist(client.request_str);
   auto &entry = request_clients_map.at(client.request_str);
-  entry->mutex.lock();
+  auto lock = Lock(entry->mutex);
 
   entry->list.emplace_back(client);
 
@@ -240,7 +243,7 @@ void Server::readRequestFromClient(Client &client) {
         Client::State::waiting_for_response_status_code_for_another_client;
     return;
   } else {
-    std::cout << client << "NONONO" << std::endl;
+    std::cout << client << "Has no sending client on this request" << std::endl;
   }
 
   if (cache_->useEntryIfExists(client.request_str)) {
@@ -251,8 +254,6 @@ void Server::readRequestFromClient(Client &client) {
     std::cout << client << "Response is not in cache" << std::endl;
     prepareForSendingRequest(client);
   }
-
-  entry->mutex.unlock();
 }
 
 void Server::sendRequestToServer(Client &client) {
@@ -267,7 +268,7 @@ void Server::readResponseStatusCodeFromServer(Client &client) {
   std::cout << client << "Read response status code from server" << std::endl;
 
   auto &entry = request_clients_map.at(client.request_str);
-  entry->mutex.lock();
+  auto lock = Lock(entry->mutex);
 
   try {
     std::vector<char> chunk = readResponseChunk(client);
@@ -285,9 +286,12 @@ void Server::readResponseStatusCodeFromServer(Client &client) {
       cache_->useEntry(client.request_str);
       writeResponseChunkToCache(client, chunk);
       for (auto &c : entry->list) {
-        if (client != c) {
-          client.state = Client::State::get_from_cache;
-          client.should_use_cache = true;
+        if (c.get().state ==
+            Client::State::
+                waiting_for_response_status_code_for_another_client) {
+          c.get().state = Client::State::get_from_cache;
+          c.get().should_use_cache = true;
+          cache_->useEntry(c.get().request_str);
         }
       }
     } else {
@@ -301,8 +305,6 @@ void Server::readResponseStatusCodeFromServer(Client &client) {
   } catch (const Exception &e) {
     prepareAllWaitingClientsForSending(entry->list);
   }
-
-  entry->mutex.unlock();
 }
 
 void Server::transferResponseChunk(Client &client) {
@@ -334,11 +336,8 @@ void Server::sendCachedResponseChunkToClient(Client &client) {
 
   const size_t received_bytes = cache_->getEntrySize(client.request_str);
   size_t chunk_size = received_bytes - client.sent_bytes;
-  std::cout << client << "BEFORE: sent_bytes=" << client.sent_bytes
-            << std::endl;
   client.sendChunkToClient(
       cache_->read(client.request_str, client.sent_bytes, chunk_size));
-  std::cout << client << "AFTER: sent_bytes=" << client.sent_bytes << std::endl;
 }
 
 void *Server::handleClient(void *arg) {
@@ -357,9 +356,8 @@ void *Server::handleClient(void *arg) {
             waiting_for_response_status_code_for_another_client: {
           auto &entry = request_clients_map.at(client->request_str);
           // TODO: check for some predicate?
+          auto lock = Lock(entry->mutex);
           entry->cond_var.wait(entry->mutex);
-          entry->mutex.unlock();
-          client->state = Client::State::get_from_cache;
           break;
         }
         case Client::State::sending_request: {

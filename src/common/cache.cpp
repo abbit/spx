@@ -3,6 +3,7 @@
 #include <iostream>
 
 #include "exception.h"
+#include "lock.h"
 
 namespace spx {
 
@@ -40,7 +41,8 @@ std::vector<char> Cache::read(const std::string &key, size_t offset,
 void Cache::removeLeastRecentlyUsed() {
   std::cout << "Remove least recently used" << std::endl;
   // find first unused from least used to recently used
-  cache_mutex_.lock();
+  auto cache_lock = Lock(cache_mutex_);
+
   auto to_be_removed = list_.end();
 
   for (auto it = list_.begin(); it != list_.end(); ++it) {
@@ -52,24 +54,23 @@ void Cache::removeLeastRecentlyUsed() {
 
   if (to_be_removed != list_.end()) {
     drop(to_be_removed->first);
-    cache_mutex_.unlock();
   } else {
-    cache_mutex_.unlock();
     throw AllInUseException();
   }
 }
 
 Cache::Entry &Cache::getEntry(const std::string &key) {
-  cache_mutex_.lock();
+  auto cache_lock = Lock(cache_mutex_);
+
   try {
     list_.splice(list_.end(), list_, hash_table_.at(key));
     hash_table_[key] = std::prev(list_.end());
   } catch (const std::out_of_range &e) {
     throw KeyNotFoundException();
   }
+
   auto &entry = *list_.back().second;
   entry.mutex.lock();
-  cache_mutex_.unlock();
   return entry;
 }
 
@@ -102,11 +103,11 @@ void Cache::useEntry(const std::string &key) {
     entry.incrementUse();
     entry.mutex.unlock();
   } else {
-    cache_mutex_.lock();
+    auto cache_lock = Lock(cache_mutex_);
+
     list_.emplace_back(key, std::make_unique<Entry>());
     hash_table_[key] = std::prev(list_.end());
     std::cout << "first use of entry, key:\n" << key << std::endl;
-    cache_mutex_.unlock();
   }
 }
 
@@ -131,9 +132,9 @@ void Cache::disuseEntry(const std::string &key) {
             << ",completed=" << entry.completed << ",key:\n"
             << key << std::endl;
   if (!entry.in_use && !entry.completed) {
-    cache_mutex_.lock();
+    auto cache_lock = Lock(cache_mutex_);
+
     drop(key);
-    cache_mutex_.unlock();
   }
 
   entry.mutex.unlock();
