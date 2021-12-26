@@ -24,15 +24,6 @@ void CondVar::wait(Mutex &mtx) {
   }
 }
 
-void CondVar::notify() {
-  int err;
-  if ((err = pthread_cond_signal(&cond_)) != 0) {
-    std::stringstream ss;
-    ss << "Error on cond_signal(): " << std::strerror(err);
-    throw CondVarException(ss.str());
-  }
-}
-
 void CondVar::notifyAll() {
   int err;
   if ((err = pthread_cond_broadcast(&cond_)) != 0) {

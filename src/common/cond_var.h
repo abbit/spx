@@ -20,7 +20,6 @@ class CondVar {
   CondVar &operator=(const CondVar &other) = delete;
 
   void wait(Mutex &mtx);
-  void notify();
   void notifyAll();
 
  private:

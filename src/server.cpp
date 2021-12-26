@@ -188,6 +188,7 @@ void Server::discardClient(Client *client) {
       if (reading_from_cache_client != entry->list.end()) {
         std::cout << "has other client that reading from cache" << std::endl;
         reading_from_cache_client->get().obtainServerConnection(*client);
+        entry->cond_var.notifyAll();
       }
     }
 
@@ -211,6 +212,25 @@ void Server::discardClient(Client *client) {
 //   cache_->disuseEntry(client.request_str);
 // }
 
+// void Server::fallbackToClientBuffer(Client &original_client,
+//                                     const std::vector<char> &chunk) {
+//   auto &entry = request_clients_map.at(original_client.request_str);
+//   auto lock = Lock(entry->mutex);
+//
+//   for (auto &c : entry->list) {
+//     auto &client = c.get();
+//     client.should_use_cache = false;
+//     client.state = Client::State::transferring_response;
+//     auto &cache_entry = cache_->getEntry(client.request_str);
+//     if (client.sent_bytes < cache_entry.size()) {
+//       client.chunks.emplace_back(cache_entry.data() + client.sent_bytes,
+//                                  cache_entry.data() + cache_entry.size());
+//     }
+//     writeResponseChunkToClientBuffer(client, chunk);
+//     cache_->disuseEntry(client.request_str);
+//   }
+// }
+
 void Server::writeResponseChunkToCache(Client &client,
                                        const std::vector<char> &chunk) {
   std::cout << client << "writing chunk to cache" << std::endl;
@@ -219,7 +239,7 @@ void Server::writeResponseChunkToCache(Client &client,
   } catch (const AllInUseException &e) {
     std::cout << client << e.what() << ", fallback to buffer" << std::endl;
     // TODO: переключить всех на буфер
-    //    fallbackToClientBuffer(client);
+    //    fallbackToClientBuffer(client, chunk);
   }
 }
 

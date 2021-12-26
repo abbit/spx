@@ -52,7 +52,8 @@ class Server {
       const std::string &request);
   static void removeFromRequestClients(Client &client);
 
-  //  static void fallbackToClientBuffer(Client &client);
+  //  static void fallbackToClientBuffer(Client &client,
+  //                                     const std::vector<char> &chunk);
 
   static void writeResponseChunkToCache(Client &client,
                                         const std::vector<char> &chunk);
