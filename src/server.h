@@ -31,7 +31,7 @@ class Server {
 
  private:
   std::unique_ptr<PassiveSocket> server_socket_;
-  //  static std::unique_ptr<Cache> cache_;
+  static std::unique_ptr<Cache> cache_;
   //  static std::unordered_map<std::string, RequestClientsMapEntry>
   //      request_clients_map;
   //    static Mutex request_clients_map_mutex_;
@@ -56,10 +56,11 @@ class Server {
   //  static void prepareAllWaitingClientsForSending(const std::string
   //  &request);
   //  static void fallbackToClientBuffer(Client &client);
-  //  static void writeResponseChunkToCache(Client &client,
-  //                                        const std::vector<char> &chunk);
-  //  static void setClientToGetResponseFromCache(Client &client);
-  //  static void sendCachedResponseToClient(Client &client);
+
+  static void writeResponseChunkToCache(Client &client,
+                                        const std::vector<char> &chunk);
+  static void setClientToGetResponseFromCache(Client &client);
+  static void sendCachedResponseToClient(Client &client);
 
   //  static RequestClientsMapEntry &getRequestClientsMapEntry(
   //      const std::string &request);

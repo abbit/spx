@@ -7,7 +7,9 @@
 #include <utility>
 #include <vector>
 
+#include "cond_var.h"
 #include "exception.h"
+//#include "mutex.h"
 
 namespace spx {
 
@@ -23,40 +25,42 @@ class KeyNotFoundException : public Exception {
 
 class Cache {
  public:
-  class Entry {
-   public:
-    size_t size() const { return buffer.size(); }
-    const char *data() const { return buffer.data(); }
-    void append(const char *buf, size_t len) {
-      buffer.insert(buffer.end(), buf, buf + len);
-    }
-
-    bool isCompleted() const { return completed; }
-    void complete() { completed = true; }
-
-    int inUse() const { return in_use; }
-    void incrementUse() { in_use++; }
-    void decrementUse() { in_use--; }
-
-   private:
-    std::vector<char> buffer;
-    bool completed{false};
-    int in_use{1};
-  };
-
   static std::unique_ptr<Cache> create(size_t max_bytes);
 
   void write(const std::string &key, const char *buf, size_t buf_len);
+
   std::vector<char> read(const std::string &key, size_t offset, size_t len);
+  std::vector<char> readAll(const std::string &key);
 
   bool contains(const std::string &key);
-  Entry &getEntry(const std::string &key);
 
   void useEntry(const std::string &key);
   void disuseEntry(const std::string &key);
 
+  bool isEntryCompleted(const std::string &key);
+  void completeEntry(const std::string &key);
+
+//  Mutex cache_mutex_;
+
  private:
-  using List = std::list<std::pair<std::string, Entry>>;
+  struct Entry {
+    std::vector<char> buffer;
+    bool completed{false};
+//    Mutex mutex;
+    int in_use{1};
+
+    size_t size() const { return buffer.size(); }
+    const char *data() const { return buffer.data(); }
+
+    void append(const char *buf, size_t len) {
+      buffer.insert(buffer.end(), buf, buf + len);
+    }
+
+    void incrementUse() { in_use++; }
+    void decrementUse() { in_use--; }
+  };
+
+  using List = std::list<std::pair<std::string, std::unique_ptr<Entry>>>;
 
   size_t max_size_;
   size_t current_size_;
@@ -65,12 +69,10 @@ class Cache {
 
   explicit Cache(size_t max_bytes);
 
+  Entry &getEntry(const std::string &key);
+
   void removeLeastRecentlyUsed();
   void makeMostRecentlyUsed(const std::string &key);
-
-  void append(const std::string &key, const char *buf, size_t buf_len);
-
-  void writeToFront(const char *buf, size_t buf_len);
 
   void drop(const std::string &key);
 

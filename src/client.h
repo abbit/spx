@@ -17,7 +17,7 @@ class Client {
  public:
   enum class State : char {
     initial,
-    //    get_from_cache,
+    get_from_cache,
     //    waiting_for_response_for_another_client,
     sending_request,
     waiting_response,
@@ -30,7 +30,7 @@ class Client {
   std::unique_ptr<ActiveSocket> server_connection{nullptr};
   State state{State::initial};
   size_t sent_bytes{0};
-//  bool should_use_cache{false};
+  bool should_use_cache{false};
   bool done{false};
 
   static Client* create(std::unique_ptr<ActiveSocket> client_conn);
