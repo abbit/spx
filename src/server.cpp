@@ -413,7 +413,6 @@ void *Server::handleClient(void *arg) {
         case Client::State::
             waiting_for_response_status_code_for_another_client: {
           auto &entry = request_clients_map.at(client->request_str);
-          // TODO: check for some predicate?
           auto lock = Lock(entry->mutex);
           entry->cond_var.wait(entry->mutex);
           break;
