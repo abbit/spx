@@ -160,6 +160,13 @@ void Cache::waitForEntryUpdate(const std::string &key) {
   }
   entry.mutex.unlock();
 }
+
+void Cache::notify(const std::string &key) {
+  auto &entry = getEntry(key);
+  entry.cond_var.notifyAll();
+  entry.mutex.unlock();
+}
+
 size_t Cache::getEntrySize(const std::string &key) {
   auto &entry = getEntry(key);
   size_t size = entry.size();

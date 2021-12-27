@@ -17,6 +17,10 @@ struct RequestClientsMapEntry {
   std::list<std::reference_wrapper<Client>> list;
   Mutex mutex;
   CondVar cond_var;
+  std::vector<char> buffer;
+  Mutex buffer_mtx;
+  CondVar buffer_cond_var;
+  bool buffer_completed{false};
 };
 
 class Server {
@@ -52,12 +56,16 @@ class Server {
       const std::string &request);
   static void removeFromRequestClients(Client &client);
 
-  //  static void fallbackToClientBuffer(Client &client,
-  //                                     const std::vector<char> &chunk);
+  static void fallbackToClientBuffer(Client &client,
+                                     const std::vector<char> &chunk);
 
-  static void writeResponseChunkToCache(Client &client,
+  static bool writeResponseChunkToCache(Client &client,
                                         const std::vector<char> &chunk);
   static void sendCachedResponseChunkToClient(Client &client);
+
+  static void writeResponseChunkToBuffer(Client &client,
+                                         const std::vector<char> &chunk);
+  static void sendBufferedResponseChunkToClient(Client &client);
 };
 
 }  // namespace spx

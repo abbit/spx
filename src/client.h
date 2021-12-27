@@ -21,6 +21,7 @@ class Client {
     waiting_for_response_status_code_for_another_client,
     sending_request,
     transferring_response,
+    get_from_buffer,
   };
 
   std::string request_str;
@@ -30,6 +31,7 @@ class Client {
   State state{State::initial};
   size_t sent_bytes{0};
   bool should_use_cache{false};
+  bool should_write_to_buffer{false};
   bool done{false};
 
   static Client* create(std::unique_ptr<ActiveSocket> client_conn);

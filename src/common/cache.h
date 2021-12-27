@@ -42,6 +42,7 @@ class Cache {
   size_t getEntrySize(const std::string &key);
 
   void waitForEntryUpdate(const std::string &key);
+  void notify(const std::string &key);
 
   Mutex cache_mutex_;
 

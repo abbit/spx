@@ -202,45 +202,59 @@ void Server::discardClient(Client *client) {
   delete client;
 }
 
-// void Server::fallbackToClientBuffer(Client &client) {
-//   auto &entry = cache_->getEntry(client.request_str);
-//   if (client.sent_bytes < entry.size()) {
-//     client.sendToClient(
-//         {entry.data() + client.sent_bytes, entry.data() + entry.size()});
-//   }
-//   client.should_use_cache = false;
-//   cache_->disuseEntry(client.request_str);
-// }
+void Server::fallbackToClientBuffer(Client &client,
+                                    const std::vector<char> &chunk) {
+  auto &key = client.request_str;
+  auto &entry = request_clients_map.at(key);
+  auto lock = Lock(entry->mutex);
 
-// void Server::fallbackToClientBuffer(Client &original_client,
-//                                     const std::vector<char> &chunk) {
-//   auto &entry = request_clients_map.at(original_client.request_str);
-//   auto lock = Lock(entry->mutex);
-//
-//   for (auto &c : entry->list) {
-//     auto &client = c.get();
-//     client.should_use_cache = false;
-//     client.state = Client::State::transferring_response;
-//     auto &cache_entry = cache_->getEntry(client.request_str);
-//     if (client.sent_bytes < cache_entry.size()) {
-//       client.chunks.emplace_back(cache_entry.data() + client.sent_bytes,
-//                                  cache_entry.data() + cache_entry.size());
-//     }
-//     writeResponseChunkToClientBuffer(client, chunk);
-//     cache_->disuseEntry(client.request_str);
-//   }
-// }
+  size_t cache_entry_size = cache_->getEntrySize(key);
 
-void Server::writeResponseChunkToCache(Client &client,
+  const auto &cached = cache_->read(key, 0, cache_entry_size);
+  writeResponseChunkToBuffer(client, cached);
+  writeResponseChunkToBuffer(client, chunk);
+
+  for (auto &c : entry->list) {
+    if (client != c.get()) {
+      c.get().should_use_cache = false;
+      c.get().state = Client::State::get_from_buffer;
+      cache_->disuseEntry(key);
+    }
+  }
+
+  cache_->notify(key);
+
+  client.state = Client::State::transferring_response;
+  client.should_use_cache = false;
+  client.should_write_to_buffer = true;
+  cache_->disuseEntry(key);
+  ;
+}
+
+bool Server::writeResponseChunkToCache(Client &client,
                                        const std::vector<char> &chunk) {
   std::cout << client << "writing chunk to cache" << std::endl;
+  bool written = false;
   try {
     cache_->write(client.request_str, chunk.data(), chunk.size());
+    written = true;
   } catch (const AllInUseException &e) {
     std::cout << client << e.what() << ", fallback to buffer" << std::endl;
-    // TODO: переключить всех на буфер
-    //    fallbackToClientBuffer(client, chunk);
+    fallbackToClientBuffer(client, chunk);
   }
+
+  return written;
+}
+
+void Server::writeResponseChunkToBuffer(Client &client,
+                                        const std::vector<char> &chunk) {
+  std::cout << client << "writing chunk to buffer" << std::endl;
+
+  auto &entry = request_clients_map.at(client.request_str);
+  auto buf_lock = Lock(entry->buffer_mtx);
+  entry->buffer.insert(entry->buffer.end(), chunk.data(),
+                       chunk.data() + chunk.size());
+  entry->buffer_cond_var.notifyAll();
 }
 
 void Server::readRequestFromClient(Client &client) {
@@ -304,14 +318,15 @@ void Server::readResponseStatusCodeFromServer(Client &client) {
     if (is_ok_status_code) {
       client.should_use_cache = true;
       cache_->useEntry(client.request_str);
-      writeResponseChunkToCache(client, chunk);
-      for (auto &c : entry->list) {
-        if (c.get().state ==
-            Client::State::
-                waiting_for_response_status_code_for_another_client) {
-          c.get().state = Client::State::get_from_cache;
-          c.get().should_use_cache = true;
-          cache_->useEntry(c.get().request_str);
+      if (writeResponseChunkToCache(client, chunk)) {
+        for (auto &c : entry->list) {
+          if (c.get().state ==
+              Client::State::
+                  waiting_for_response_status_code_for_another_client) {
+            c.get().state = Client::State::get_from_cache;
+            c.get().should_use_cache = true;
+            cache_->useEntry(c.get().request_str);
+          }
         }
       }
     } else {
@@ -335,6 +350,8 @@ void Server::transferResponseChunk(Client &client) {
 
     if (client.should_use_cache) {
       writeResponseChunkToCache(client, chunk);
+    } else if (client.should_write_to_buffer) {
+      writeResponseChunkToBuffer(client, chunk);
     }
 
     client.sendChunkToClient(chunk);
@@ -342,6 +359,10 @@ void Server::transferResponseChunk(Client &client) {
     std::cout << "Done transferring response" << std::endl;
     if (client.should_use_cache) {
       cache_->completeEntry(client.request_str);
+    } else if (client.should_write_to_buffer) {
+      auto &entry = request_clients_map.at(client.request_str);
+      auto lock = Lock(entry->buffer_mtx);
+      entry->buffer_completed = true;
     }
     client.done = true;
   }
@@ -358,6 +379,23 @@ void Server::sendCachedResponseChunkToClient(Client &client) {
   size_t chunk_size = received_bytes - client.sent_bytes;
   client.sendChunkToClient(
       cache_->read(client.request_str, client.sent_bytes, chunk_size));
+}
+
+void Server::sendBufferedResponseChunkToClient(Client &client) {
+  std::cout << client << "Send buffer response chunk" << std::endl;
+
+  auto &entry = request_clients_map.at(client.request_str);
+  auto lock = Lock(entry->buffer_mtx);
+
+  if (entry->buffer_completed) {
+    client.done = true;
+  }
+
+  const size_t received_bytes = entry->buffer.size();
+  size_t chunk_size = received_bytes - client.sent_bytes;
+  client.sendChunkToClient(
+      {entry->buffer.data() + client.sent_bytes,
+       entry->buffer.data() + client.sent_bytes + chunk_size});
 }
 
 void *Server::handleClient(void *arg) {
@@ -392,7 +430,21 @@ void *Server::handleClient(void *arg) {
         case Client::State::get_from_cache: {
           std::cout << *client << "wait for cache update" << std::endl;
           cache_->waitForEntryUpdate(client->request_str);
-          sendCachedResponseChunkToClient(*client);
+          if (client->state == Client::State::get_from_cache) {
+            sendCachedResponseChunkToClient(*client);
+          }
+          break;
+        }
+        case Client::State::get_from_buffer: {
+          std::cout << *client << "wait for buffer update" << std::endl;
+          auto &entry = request_clients_map.at(client->request_str);
+          {
+            auto lock = Lock(entry->buffer_mtx);
+            if (!entry->buffer_completed) {
+              entry->buffer_cond_var.wait(entry->buffer_mtx);
+            }
+          }
+          sendBufferedResponseChunkToClient(*client);
           break;
         }
         default:

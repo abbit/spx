@@ -2,7 +2,7 @@
 
 url1="http://classics.mit.edu/Plato/laws.mb.txt"
 url2="http://www.ccfit.nsu.ru/fit/courses/physics/meh_elem_sto.pdf"
-url3="http://www.lib.ru/INPROZ/KERUAK/bigsir_engl.txt"
+url3="http://0.0.0.0:8000/attacks.pdf"
 
 function do_req() {
   curl --no-keepalive --proxy-header "Proxy-Connection:" -x 127.0.0.1:7331 $1 -o $2 &>$3 &
@@ -10,4 +10,4 @@ function do_req() {
 
 do_req $url1 parallel_1.txt parallel_1.log
 do_req $url2 parallel_2.pdf parallel_2.log
-do_req $url3 parallel_3.html parallel_3.log
+do_req $url3 parallel_3.pdf parallel_3.log
