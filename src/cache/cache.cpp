@@ -2,8 +2,6 @@
 
 #include <iostream>
 
-#include "exception.h"
-
 namespace spx {
 
 std::unique_ptr<Cache> Cache::create(size_t max_items) {

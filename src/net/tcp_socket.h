@@ -10,7 +10,7 @@
 #include <string>
 #include <utility>
 
-#include "exception.h"
+#include "../common/exception.h"
 
 namespace spx {
 const int INVALID_SOCKET_FD = -1;

@@ -7,9 +7,9 @@
 #include <unordered_map>
 #include <vector>
 
+#include "cache/cache.h"
+#include "net/passive_socket.h"
 #include "clients_list.h"
-#include "common/cache.h"
-#include "common/passive_socket.h"
 
 namespace spx {
 

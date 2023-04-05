@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-#include "exception.h"
+#include "../common/exception.h"
 
 namespace spx {
 

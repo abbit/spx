@@ -7,8 +7,8 @@
 #include <string>
 #include <vector>
 
-#include "common/active_socket.h"
-#include "common/http_request.h"
+#include "net/active_socket.h"
+#include "http/http_request.h"
 
 namespace spx {
 

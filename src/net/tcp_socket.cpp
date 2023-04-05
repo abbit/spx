@@ -7,8 +7,6 @@
 #include <iostream>
 #include <utility>
 
-#include "exception.h"
-
 namespace spx {
 bool TcpSocket::operator==(const TcpSocket &other) const {
   return getFileDescriptor() == other.getFileDescriptor();

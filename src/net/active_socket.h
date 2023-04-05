@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "exception.h"
+#include "../common/exception.h"
 #include "tcp_socket.h"
 
 namespace spx {

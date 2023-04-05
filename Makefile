@@ -1,5 +1,5 @@
 CC=g++
-CFLAGS=-std=c++17 -I vendor -Wall -Wextra -Wpedantic
+CFLAGS=-std=c++17 -Wall -Wextra -Wpedantic
 BUILD_DIR=build
 TARGET=simple_proxy_server
 SRC=$(shell find ./src -type f -name *.cpp)

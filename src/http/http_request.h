@@ -4,7 +4,7 @@
 #include <sstream>
 #include <string>
 
-#include "exception.h"
+#include "../common/exception.h"
 #include "httpparser/httprequestparser.hpp"
 #include "httpparser/request.hpp"
 #include "httpparser/urlparser.hpp"

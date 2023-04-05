@@ -14,12 +14,10 @@
 #include <utility>
 
 #include "common/exception.h"
-#include "common/http_request.h"
-#include "common/passive_socket.h"
+#include "http/http_request.h"
+#include "net/passive_socket.h"
 
 namespace spx {
-
-namespace http = httpparser;
 
 namespace {
 const int TIMEOUT = 600000;  // in ms
